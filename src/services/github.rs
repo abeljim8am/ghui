@@ -2,7 +2,7 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use std::process::Command;
 
-use crate::data::{CiStatus, PrFilter, PullRequest, SearchGraphQLResponse, SearchNode};
+use crate::data::{ActionsData, CheckAnnotation, CiStatus, JobLogs, PrFilter, PullRequest, SearchGraphQLResponse, SearchNode, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
 use crate::utils::get_current_repo;
 
 pub fn get_github_token() -> Result<String> {
@@ -80,6 +80,7 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
                         commits(last: 1) {
                             nodes {
                                 commit {
+                                    oid
                                     statusCheckRollup {
                                         state
                                     }
@@ -125,12 +126,14 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
                 SearchNode::Other => continue,
             };
 
-            let ci_status = commits
-                .nodes
-                .first()
+            let first_commit = commits.nodes.first();
+
+            let ci_status = first_commit
                 .and_then(|c| c.commit.status_check_rollup.as_ref())
                 .map(|s| s.state.parse().unwrap())
                 .unwrap_or(CiStatus::Unknown);
+
+            let head_sha = first_commit.and_then(|c| c.oid()).map(|s| s.to_string());
 
             let author_login = author
                 .map(|a| a.login)
@@ -144,6 +147,7 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
                 repo_name: repo.clone(),
                 ci_status,
                 author: author_login,
+                head_sha,
             });
         }
 
@@ -162,4 +166,422 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
     }
 
     Ok(prs)
+}
+
+/// Fetch all checks (GitHub Actions, CircleCI, etc.) for a specific PR
+pub async fn fetch_actions_for_pr(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    _head_sha: &str, // Not used directly, we fetch via PR number
+) -> Result<ActionsData> {
+    let token = get_github_token()?;
+    let octocrab = Octocrab::builder().personal_token(token).build()?;
+
+    // Use GraphQL to get all check suites and check runs for the PR's latest commit
+    // This includes GitHub Actions, CircleCI, and any other CI providers
+    let query = r#"
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
+                    commits(last: 1) {
+                        nodes {
+                            commit {
+                                checkSuites(first: 50) {
+                                    nodes {
+                                        app {
+                                            name
+                                        }
+                                        conclusion
+                                        status
+                                        url
+                                        checkRuns(first: 50) {
+                                            nodes {
+                                                databaseId
+                                                name
+                                                conclusion
+                                                status
+                                                detailsUrl
+                                                startedAt
+                                                completedAt
+                                                text
+                                                summary
+                                                annotations(first: 50) {
+                                                    nodes {
+                                                        path
+                                                        location {
+                                                            start {
+                                                                line
+                                                            }
+                                                            end {
+                                                                line
+                                                            }
+                                                        }
+                                                        annotationLevel
+                                                        message
+                                                        title
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                status {
+                                    contexts {
+                                        context
+                                        state
+                                        targetUrl
+                                        createdAt
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let response: serde_json::Value = octocrab
+        .graphql(&serde_json::json!({
+            "query": query,
+            "variables": {
+                "owner": owner,
+                "repo": repo,
+                "prNumber": pr_number as i64
+            }
+        }))
+        .await?;
+
+    let workflow_runs = parse_checks_response(&response)?;
+
+    Ok(ActionsData {
+        pr_number,
+        workflow_runs,
+        error: None,
+    })
+}
+
+fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun>> {
+    let mut runs = Vec::new();
+
+    let commit = response
+        .pointer("/data/repository/pullRequest/commits/nodes/0/commit")
+        .ok_or_else(|| anyhow::anyhow!("No commit data found"))?;
+
+    // Parse check suites (GitHub Actions, CircleCI checks, etc.)
+    if let Some(check_suites) = commit.pointer("/checkSuites/nodes").and_then(|v| v.as_array()) {
+        for (idx, suite) in check_suites.iter().enumerate() {
+            let app_name = suite
+                .pointer("/app/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown App")
+                .to_string();
+
+            let suite_status = suite
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("QUEUED");
+
+            let suite_conclusion = suite.get("conclusion").and_then(|v| v.as_str());
+
+            let url = suite
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Parse check runs within this suite
+            let mut jobs = Vec::new();
+            if let Some(check_runs) = suite.pointer("/checkRuns/nodes").and_then(|v| v.as_array()) {
+                for run in check_runs {
+                    let database_id = run
+                        .get("databaseId")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+
+                    let name = run
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+
+                    let status_str = run
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("QUEUED");
+
+                    let conclusion_str = run.get("conclusion").and_then(|v| v.as_str());
+
+                    let started_at = run
+                        .get("startedAt")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let completed_at = run
+                        .get("completedAt")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let status = parse_check_status(status_str);
+                    let conclusion = conclusion_str.map(parse_check_conclusion);
+
+                    let details_url = run
+                        .get("detailsUrl")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let summary = run
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let text = run
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    // Parse annotations
+                    let mut annotations = Vec::new();
+                    if let Some(annotation_nodes) = run.pointer("/annotations/nodes").and_then(|v| v.as_array()) {
+                        for ann in annotation_nodes {
+                            let path = ann
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+
+                            let start_line = ann
+                                .pointer("/location/start/line")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u32;
+
+                            let end_line = ann
+                                .pointer("/location/end/line")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(start_line as u64) as u32;
+
+                            let level_str = ann
+                                .get("annotationLevel")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("NOTICE");
+
+                            let message = ann
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+
+                            let title = ann
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            annotations.push(CheckAnnotation {
+                                path,
+                                start_line,
+                                end_line,
+                                level: level_str.parse().unwrap(),
+                                message,
+                                title,
+                            });
+                        }
+                    }
+
+                    jobs.push(WorkflowJob {
+                        id: database_id,
+                        name,
+                        status,
+                        conclusion,
+                        started_at,
+                        completed_at,
+                        details_url,
+                        summary,
+                        text,
+                        annotations,
+                    });
+                }
+            }
+
+            // Only add suites that have check runs or are meaningful
+            if !jobs.is_empty() {
+                let status = parse_check_status(suite_status);
+                let conclusion = suite_conclusion.map(parse_check_conclusion);
+
+                runs.push(WorkflowRun {
+                    id: idx as u64,
+                    name: app_name,
+                    status,
+                    conclusion,
+                    html_url: url,
+                    jobs,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                });
+            }
+        }
+    }
+
+    // Parse legacy commit statuses (some CI systems use this instead of checks)
+    if let Some(contexts) = commit.pointer("/status/contexts").and_then(|v| v.as_array()) {
+        if !contexts.is_empty() {
+            let mut status_jobs = Vec::new();
+
+            for context in contexts {
+                let name = context
+                    .get("context")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let state = context
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("PENDING");
+
+                let created_at = context
+                    .get("createdAt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let (status, conclusion) = parse_commit_status_state(state);
+
+                let target_url = context
+                    .get("targetUrl")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                status_jobs.push(WorkflowJob {
+                    id: 0,
+                    name,
+                    status,
+                    conclusion,
+                    started_at: created_at,
+                    completed_at: None,
+                    details_url: target_url,
+                    summary: None,
+                    text: None,
+                    annotations: Vec::new(),
+                });
+            }
+
+            if !status_jobs.is_empty() {
+                // Determine overall status from jobs
+                let has_pending = status_jobs.iter().any(|j| {
+                    matches!(j.status, WorkflowStatus::Pending | WorkflowStatus::InProgress)
+                });
+                let has_failure = status_jobs.iter().any(|j| {
+                    matches!(j.conclusion, Some(WorkflowConclusion::Failure))
+                });
+
+                let (overall_status, overall_conclusion) = if has_pending {
+                    (WorkflowStatus::InProgress, None)
+                } else if has_failure {
+                    (WorkflowStatus::Completed, Some(WorkflowConclusion::Failure))
+                } else {
+                    (WorkflowStatus::Completed, Some(WorkflowConclusion::Success))
+                };
+
+                runs.push(WorkflowRun {
+                    id: 999,
+                    name: "Commit Statuses".to_string(),
+                    status: overall_status,
+                    conclusion: overall_conclusion,
+                    html_url: String::new(),
+                    jobs: status_jobs,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                });
+            }
+        }
+    }
+
+    Ok(runs)
+}
+
+fn parse_check_status(status: &str) -> WorkflowStatus {
+    match status.to_uppercase().as_str() {
+        "QUEUED" => WorkflowStatus::Queued,
+        "IN_PROGRESS" => WorkflowStatus::InProgress,
+        "COMPLETED" => WorkflowStatus::Completed,
+        "WAITING" => WorkflowStatus::Waiting,
+        "REQUESTED" => WorkflowStatus::Requested,
+        "PENDING" => WorkflowStatus::Pending,
+        _ => WorkflowStatus::Unknown,
+    }
+}
+
+fn parse_check_conclusion(conclusion: &str) -> WorkflowConclusion {
+    match conclusion.to_uppercase().as_str() {
+        "SUCCESS" => WorkflowConclusion::Success,
+        "FAILURE" => WorkflowConclusion::Failure,
+        "CANCELLED" => WorkflowConclusion::Cancelled,
+        "SKIPPED" => WorkflowConclusion::Skipped,
+        "TIMED_OUT" => WorkflowConclusion::TimedOut,
+        "ACTION_REQUIRED" => WorkflowConclusion::ActionRequired,
+        "NEUTRAL" => WorkflowConclusion::Neutral,
+        "STALE" => WorkflowConclusion::Stale,
+        "STARTUP_FAILURE" => WorkflowConclusion::StartupFailure,
+        _ => WorkflowConclusion::None,
+    }
+}
+
+fn parse_commit_status_state(state: &str) -> (WorkflowStatus, Option<WorkflowConclusion>) {
+    match state.to_uppercase().as_str() {
+        "PENDING" => (WorkflowStatus::Pending, None),
+        "SUCCESS" => (WorkflowStatus::Completed, Some(WorkflowConclusion::Success)),
+        "FAILURE" => (WorkflowStatus::Completed, Some(WorkflowConclusion::Failure)),
+        "ERROR" => (WorkflowStatus::Completed, Some(WorkflowConclusion::Failure)),
+        _ => (WorkflowStatus::Unknown, None),
+    }
+}
+
+/// Fetch job logs using `gh` CLI (avoids auth complexity)
+pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> Result<JobLogs> {
+    // If job_id is 0, this is likely a third-party check (CircleCI, etc.) without GitHub logs
+    if job_id == 0 {
+        return Ok(JobLogs {
+            job_id,
+            job_name: job_name.to_string(),
+            content: "No logs available for this check.\n\nPress 'o' to open it in your browser.".to_string(),
+        });
+    }
+
+    // Use gh CLI to fetch job logs - simpler than dealing with GitHub API auth for logs
+    let output = Command::new("gh")
+        .args([
+            "run",
+            "view",
+            "--repo",
+            &format!("{}/{}", owner, repo),
+            "--job",
+            &job_id.to_string(),
+            "--log",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // If the job doesn't have logs yet or is a non-GitHub check, return a helpful message
+        if stderr.contains("not found") || stderr.contains("no logs") {
+            return Ok(JobLogs {
+                job_id,
+                job_name: job_name.to_string(),
+                content: "No logs available for this check.\n\nThe job may not have produced logs yet, or logs may have expired.".to_string(),
+            });
+        }
+        anyhow::bail!("Failed to fetch job logs: {}", stderr);
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout).to_string();
+
+    Ok(JobLogs {
+        job_id,
+        job_name: job_name.to_string(),
+        content: if content.is_empty() {
+            "No log output available.".to_string()
+        } else {
+            content
+        },
+    })
 }

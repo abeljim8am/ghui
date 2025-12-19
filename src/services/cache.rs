@@ -196,6 +196,7 @@ pub fn load_cache(owner: &str, repo: &str, filter: PrFilter) -> Result<Vec<PullR
                 repo_name: row.get(4)?,
                 ci_status: row.get::<_, String>(5)?.parse().unwrap(),
                 author: row.get(6)?,
+                head_sha: None, // Not cached, will be populated on fresh fetch
             })
         })?
         .filter_map(|r| r.ok())

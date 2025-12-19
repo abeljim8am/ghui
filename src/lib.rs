@@ -1,5 +1,6 @@
 pub mod app;
 pub mod data;
+pub mod icons;
 pub mod services;
 pub mod utils;
 pub mod view;

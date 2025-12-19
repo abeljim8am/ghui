@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::data::PrFilter;
+use crate::icons;
 
 use super::popups::truncate_string;
 
@@ -84,7 +85,7 @@ pub fn render_table(f: &mut Frame, app: &App, area: Rect) {
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
     )
-    .highlight_symbol("▶ ");
+    .highlight_symbol(icons::SELECTOR);
 
     f.render_stateful_widget(table, area, &mut app.table_state.clone());
 }

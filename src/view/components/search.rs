@@ -7,13 +7,14 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::icons;
 
 /// Render the search bar
 pub fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {
     let total_count = app.current_prs().len();
     let filtered_count = app.filtered_indices.len();
 
-    let cursor = if app.search_mode { "█" } else { "" };
+    let cursor = if app.search_mode { icons::CURSOR } else { "" };
     let count_display = if app.search_query.is_empty() {
         String::new()
     } else {

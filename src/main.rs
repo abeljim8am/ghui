@@ -49,6 +49,33 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
+        // Check for actions fetch results
+        if let Some(result) = app.check_actions_result() {
+            if let Some(cmd) = update(app, Message::ActionsDataReceived(result)) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Check for job logs fetch results
+        if let Some(result) = app.check_job_logs_result() {
+            if let Some(cmd) = update(app, Message::JobLogsReceived(result)) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Auto-poll actions if workflows view is open and has pending jobs
+        if app.should_poll_actions() {
+            if let Some(cmd) = update(app, Message::RefreshActions) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
         // Update spinner
         if let Some(cmd) = update(app, Message::Tick) {
             if handle_command(app, cmd) {
@@ -86,6 +113,14 @@ fn handle_command(app: &mut App, cmd: Command) -> bool {
             app.start_fetch(filter);
             false
         }
+        Command::StartActionsFetch(owner, repo, pr_number, head_sha) => {
+            app.start_actions_fetch(&owner, &repo, pr_number, &head_sha);
+            false
+        }
+        Command::StartJobLogsFetch(owner, repo, job_id, job_name) => {
+            app.start_job_logs_fetch(&owner, &repo, job_id, &job_name);
+            false
+        }
     }
 }
 
@@ -109,6 +144,44 @@ fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
     if app.show_error_popup {
         return match key {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Some(Message::DismissError),
+            _ => None,
+        };
+    }
+
+    // Job logs view (nested inside workflows view)
+    if app.show_workflows_view && app.show_job_logs {
+        // Annotations view has different keybindings
+        if app.annotations_view && !app.annotations.is_empty() {
+            return match key {
+                KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
+                KeyCode::Char('j') | KeyCode::Down => Some(Message::AnnotationNext),
+                KeyCode::Char('k') | KeyCode::Up => Some(Message::AnnotationPrevious),
+                KeyCode::Char('v') | KeyCode::Char(' ') => Some(Message::ToggleAnnotationSelection),
+                KeyCode::Char('y') => Some(Message::CopyAnnotations),
+                KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
+                _ => None,
+            };
+        }
+        // Regular logs view
+        return match key {
+            KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
+            KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsScrollDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Message::JobLogsScrollUp),
+            KeyCode::Char('y') => Some(Message::CopyJobLogs),
+            KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
+            _ => None,
+        };
+    }
+
+    // Workflows view
+    if app.show_workflows_view {
+        return match key {
+            KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseWorkflowsView),
+            KeyCode::Char('j') | KeyCode::Down => Some(Message::ActionsNextJob),
+            KeyCode::Char('k') | KeyCode::Up => Some(Message::ActionsPreviousJob),
+            KeyCode::Char('r') => Some(Message::RefreshActions),
+            KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
+            KeyCode::Enter => Some(Message::OpenJobLogs),
             _ => None,
         };
     }
@@ -168,6 +241,7 @@ fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
         KeyCode::Char('r') => Some(Message::Refresh),
         KeyCode::Char('?') => Some(Message::ToggleHelp),
         KeyCode::Char('l') => Some(Message::OpenLabelsPopup),
+        KeyCode::Char('w') => Some(Message::OpenWorkflowsView),
         KeyCode::Char('1') => Some(Message::SwitchTab(PrFilter::MyPrs)),
         KeyCode::Char('2') => Some(Message::SwitchTab(PrFilter::ReviewRequested)),
         KeyCode::Char('3') => {

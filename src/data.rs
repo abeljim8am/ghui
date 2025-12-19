@@ -3,7 +3,10 @@ pub mod types;
 
 pub use models::{LabelFilter, PullRequest};
 pub use types::{
-    CacheMeta, CiStatus, CommitConnection, CommitData, CommitNode, LabelFiltersTable, PageInfo,
-    PrFilter, PullRequestsTable, SearchConnection, SearchGraphQLData, SearchGraphQLResponse,
-    SearchNode, StatusCheckRollup, CACHE_VERSION, SPINNER_FRAMES,
+    ActionsData, AnnotationLevel, CacheMeta, CheckAnnotation, CiStatus, CommitConnection,
+    CommitData, CommitNode, JobLogs, LabelFiltersTable, PageInfo, PrFilter, PullRequestsTable,
+    SearchConnection, SearchGraphQLData, SearchGraphQLResponse, SearchNode, StatusCheckRollup,
+    WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus, CACHE_VERSION,
 };
+
+pub use crate::icons::SPINNER_FRAMES;

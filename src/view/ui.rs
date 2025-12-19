@@ -1,19 +1,41 @@
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style},
-    widgets::Paragraph,
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
 use crate::app::App;
+use crate::icons;
 
 use super::components::{
-    render_add_label_popup, render_checkout_popup, render_error_popup, render_help_popup,
-    render_labels_popup, render_search_bar, render_table, render_tabs,
+    render_add_label_popup, render_checkout_popup, render_error_popup,
+    render_help_popup, render_job_logs_view, render_labels_popup, render_search_bar,
+    render_table, render_tabs, render_workflows_view,
 };
 
 /// Main UI rendering function
 pub fn ui(f: &mut Frame, app: &App) {
+    // Always clear the entire screen first to prevent leftover characters
+    f.render_widget(Clear, f.area());
+
+    // If in workflows view, render it as a full page
+    if app.show_workflows_view {
+        if app.show_job_logs {
+            render_job_logs_view(f, app);
+        } else {
+            render_workflows_view(f, app);
+        }
+
+        // Still render error popup over workflows view
+        if app.show_error_popup {
+            if let Some(ref error) = app.error {
+                render_error_popup(f, error);
+            }
+        }
+        return;
+    }
+
     // Calculate layout based on whether search is active
     let chunks = if app.search_mode || !app.search_query.is_empty() {
         Layout::vertical([
@@ -35,7 +57,7 @@ pub fn ui(f: &mut Frame, app: &App) {
     render_tabs(f, app, chunks[0]);
 
     // Separator line
-    let separator = "─".repeat(chunks[1].width as usize);
+    let separator = icons::SEPARATOR_CHAR.repeat(chunks[1].width as usize);
     f.render_widget(
         Paragraph::new(separator).style(Style::default().fg(Color::DarkGray)),
         chunks[1],

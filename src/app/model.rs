@@ -4,8 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::data::{LabelFilter, PrFilter, PullRequest, SPINNER_FRAMES};
-use crate::services::{fetch_prs_graphql, load_cache, load_label_filters, save_cache};
+use crate::data::{ActionsData, CheckAnnotation, JobLogs, LabelFilter, PrFilter, PullRequest, SPINNER_FRAMES};
+use crate::services::{fetch_actions_for_pr, fetch_job_logs, fetch_prs_graphql, load_cache, load_label_filters, save_cache};
 use crate::utils::get_current_repo;
 
 use super::message::FetchResult;
@@ -38,6 +38,32 @@ pub struct App {
     pub show_labels_popup: bool,
     pub show_add_label_popup: bool,
 
+    // Workflows view state
+    pub show_workflows_view: bool,
+    pub actions_data: Option<ActionsData>,
+    pub actions_loading: bool,
+    pub selected_job_index: usize,
+    pub actions_poll_enabled: bool,
+    pub last_actions_poll: Instant,
+    pub actions_pending_pr_number: Option<u64>, // PR we're waiting to get head_sha for
+    pub workflows_pr_info: Option<(String, u64)>, // (title, number) for display
+
+    // Job logs state
+    pub show_job_logs: bool,
+    pub job_logs: Option<JobLogs>,
+    pub job_logs_loading: bool,
+    pub job_logs_scroll: u16,
+
+    // Annotations view state (for reviewdog, etc.)
+    pub annotations_view: bool,           // true if viewing annotations, false for raw logs
+    pub annotations: Vec<CheckAnnotation>, // current annotations being displayed
+    pub selected_annotation_index: usize,
+    pub selected_annotations: Vec<usize>,  // indices of selected annotations for copying
+
+    // Clipboard feedback
+    pub clipboard_feedback: Option<String>,
+    pub clipboard_feedback_time: Instant,
+
     // Error state
     pub error: Option<String>,
 
@@ -57,6 +83,14 @@ pub struct App {
     pub fetch_tx: Sender<PrFilter>,
     pub result_rx: Receiver<FetchResult>,
 
+    // Actions async communication
+    pub actions_tx: Sender<(String, String, u64, String)>, // owner, repo, pr_number, head_sha
+    pub actions_rx: Receiver<FetchResult>,
+
+    // Job logs async communication
+    pub job_logs_tx: Sender<(String, String, u64, String)>, // owner, repo, job_id, job_name
+    pub job_logs_rx: Receiver<FetchResult>,
+
     // Spinner state
     pub spinner_idx: usize,
     pub last_spinner_update: Instant,
@@ -67,7 +101,7 @@ impl App {
         let (fetch_tx, fetch_rx) = mpsc::channel::<PrFilter>();
         let (result_tx, result_rx) = mpsc::channel::<FetchResult>();
 
-        // Spawn background thread for fetching
+        // Spawn background thread for fetching PRs
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             while let Ok(filter) = fetch_rx.recv() {
@@ -89,6 +123,43 @@ impl App {
                     Err(e) => FetchResult::Error(format!("{}", e)),
                 };
                 if result_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Channel for actions fetching
+        let (actions_tx, actions_rx_internal) = mpsc::channel::<(String, String, u64, String)>();
+        let (actions_result_tx, actions_rx) = mpsc::channel::<FetchResult>();
+
+        // Spawn background thread for fetching Actions
+        thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            while let Ok((owner, repo, pr_number, head_sha)) = actions_rx_internal.recv() {
+                let result = rt.block_on(fetch_actions_for_pr(&owner, &repo, pr_number, &head_sha));
+                let msg = match result {
+                    Ok(data) => FetchResult::ActionsSuccess(data),
+                    Err(e) => FetchResult::ActionsError(format!("{}", e)),
+                };
+                if actions_result_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Channel for job logs fetching
+        let (job_logs_tx, job_logs_rx_internal) = mpsc::channel::<(String, String, u64, String)>();
+        let (job_logs_result_tx, job_logs_rx) = mpsc::channel::<FetchResult>();
+
+        // Spawn background thread for fetching job logs
+        thread::spawn(move || {
+            while let Ok((owner, repo, job_id, job_name)) = job_logs_rx_internal.recv() {
+                let result = fetch_job_logs(&owner, &repo, job_id, &job_name);
+                let msg = match result {
+                    Ok(logs) => FetchResult::JobLogsSuccess(logs),
+                    Err(e) => FetchResult::JobLogsError(format!("{}", e)),
+                };
+                if job_logs_result_tx.send(msg).is_err() {
                     break;
                 }
             }
@@ -142,6 +213,24 @@ impl App {
             show_error_popup: false,
             show_labels_popup: false,
             show_add_label_popup: false,
+            show_workflows_view: false,
+            actions_data: None,
+            actions_loading: false,
+            selected_job_index: 0,
+            actions_poll_enabled: false,
+            last_actions_poll: Instant::now(),
+            actions_pending_pr_number: None,
+            workflows_pr_info: None,
+            show_job_logs: false,
+            job_logs: None,
+            job_logs_loading: false,
+            job_logs_scroll: 0,
+            annotations_view: false,
+            annotations: Vec::new(),
+            selected_annotation_index: 0,
+            selected_annotations: Vec::new(),
+            clipboard_feedback: None,
+            clipboard_feedback_time: Instant::now(),
             error: None,
             pending_checkout_branch: None,
             label_input: String::new(),
@@ -151,6 +240,10 @@ impl App {
             repo_name,
             fetch_tx,
             result_rx,
+            actions_tx,
+            actions_rx,
+            job_logs_tx,
+            job_logs_rx,
             spinner_idx: 0,
             last_spinner_update: Instant::now(),
         })
@@ -225,5 +318,47 @@ impl App {
 
     pub fn check_fetch_result(&mut self) -> Option<FetchResult> {
         self.result_rx.try_recv().ok()
+    }
+
+    // Actions fetch management
+
+    pub fn start_actions_fetch(&mut self, owner: &str, repo: &str, pr_number: u64, head_sha: &str) {
+        self.actions_loading = true;
+        self.last_actions_poll = Instant::now();
+        let _ = self.actions_tx.send((
+            owner.to_string(),
+            repo.to_string(),
+            pr_number,
+            head_sha.to_string(),
+        ));
+    }
+
+    pub fn check_actions_result(&mut self) -> Option<FetchResult> {
+        self.actions_rx.try_recv().ok()
+    }
+
+    // Job logs fetch management
+
+    pub fn start_job_logs_fetch(&mut self, owner: &str, repo: &str, job_id: u64, job_name: &str) {
+        self.job_logs_loading = true;
+        self.job_logs = None;
+        self.job_logs_scroll = 0;
+        let _ = self.job_logs_tx.send((
+            owner.to_string(),
+            repo.to_string(),
+            job_id,
+            job_name.to_string(),
+        ));
+    }
+
+    pub fn check_job_logs_result(&mut self) -> Option<FetchResult> {
+        self.job_logs_rx.try_recv().ok()
+    }
+
+    pub fn should_poll_actions(&self) -> bool {
+        self.show_workflows_view
+            && self.actions_poll_enabled
+            && !self.actions_loading
+            && self.last_actions_poll.elapsed() >= Duration::from_secs(30)
     }
 }

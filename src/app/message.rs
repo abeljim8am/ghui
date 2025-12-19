@@ -1,9 +1,13 @@
-use crate::data::{PrFilter, PullRequest};
+use crate::data::{ActionsData, JobLogs, PrFilter, PullRequest};
 
 /// Result from an async fetch operation
 pub enum FetchResult {
     Success(Vec<PullRequest>, PrFilter),
     Error(String),
+    ActionsSuccess(ActionsData),
+    ActionsError(String),
+    JobLogsSuccess(JobLogs),
+    JobLogsError(String),
 }
 
 /// Command to be executed after update
@@ -11,6 +15,8 @@ pub enum Command {
     Quit,
     StartFetch(PrFilter),
     ExitAfterCheckout,
+    StartActionsFetch(String, String, u64, String), // owner, repo, pr_number, head_sha
+    StartJobLogsFetch(String, String, u64, String), // owner, repo, job_id, job_name
 }
 
 /// All possible messages/events in the application
@@ -54,6 +60,29 @@ pub enum Message {
     DeleteSelectedLabel,
     LabelsNext,
     LabelsPrevious,
+
+    // Workflows view
+    OpenWorkflowsView,
+    CloseWorkflowsView,
+    ActionsDataReceived(FetchResult),
+    RefreshActions,
+    ActionsNextJob,
+    ActionsPreviousJob,
+    OpenActionsInBrowser,
+
+    // Job logs
+    OpenJobLogs,
+    CloseJobLogs,
+    JobLogsReceived(FetchResult),
+    JobLogsScrollUp,
+    JobLogsScrollDown,
+    CopyJobLogs,
+
+    // Annotations view (reviewdog, etc.)
+    AnnotationNext,
+    AnnotationPrevious,
+    ToggleAnnotationSelection,
+    CopyAnnotations,
 
     // Async results
     FetchComplete(FetchResult),

@@ -9,6 +9,7 @@ pub struct PullRequest {
     pub repo_name: String,
     pub ci_status: CiStatus,
     pub author: String,
+    pub head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone)]
