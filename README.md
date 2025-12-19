@@ -22,6 +22,26 @@ A terminal user interface (TUI) for viewing and managing GitHub pull requests.
 
 ## Installation
 
+### Quick Install (Recommended)
+
+Install the latest release with a single command (works with bash, zsh, fish, and other shells):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abeljim8am/ghui/main/install.sh | sh
+```
+
+Or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/abeljim8am/ghui/main/install.sh | sh
+```
+
+To install to a custom directory (e.g., `/usr/local/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abeljim8am/ghui/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+```
+
 ### From Source
 
 ```bash
