@@ -820,3 +820,28 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 
     lines
 }
+
+/// Render the bottom legend with keyboard shortcuts
+pub fn render_legend(f: &mut Frame, area: Rect) {
+    let legend = Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(" nav  "),
+        Span::styled("o", Style::default().fg(Color::Yellow)),
+        Span::raw(" open  "),
+        Span::styled("c", Style::default().fg(Color::Yellow)),
+        Span::raw(" checkout  "),
+        Span::styled("/", Style::default().fg(Color::Yellow)),
+        Span::raw(" search  "),
+        Span::styled("w", Style::default().fg(Color::Yellow)),
+        Span::raw(" workflows  "),
+        Span::styled("l", Style::default().fg(Color::Yellow)),
+        Span::raw(" labels  "),
+        Span::styled("?", Style::default().fg(Color::Yellow)),
+        Span::raw(" help  "),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(" quit"),
+    ]);
+
+    let paragraph = Paragraph::new(legend).style(Style::default().fg(Color::DarkGray));
+    f.render_widget(paragraph, area);
+}

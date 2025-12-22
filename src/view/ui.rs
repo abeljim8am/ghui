@@ -10,8 +10,8 @@ use crate::icons;
 
 use super::components::{
     render_add_label_popup, render_checkout_popup, render_error_popup,
-    render_help_popup, render_job_logs_view, render_labels_popup, render_search_bar,
-    render_table, render_tabs, render_workflows_view,
+    render_help_popup, render_job_logs_view, render_labels_popup, render_legend,
+    render_search_bar, render_table, render_tabs, render_workflows_view,
 };
 
 /// Main UI rendering function
@@ -43,6 +43,7 @@ pub fn ui(f: &mut Frame, app: &App) {
             Constraint::Length(1), // Separator
             Constraint::Min(0),    // Table
             Constraint::Length(1), // Search bar
+            Constraint::Length(1), // Legend
         ])
         .split(f.area())
     } else {
@@ -50,6 +51,7 @@ pub fn ui(f: &mut Frame, app: &App) {
             Constraint::Length(1), // Tabs
             Constraint::Length(1), // Separator
             Constraint::Min(0),    // Table
+            Constraint::Length(1), // Legend
         ])
         .split(f.area())
     };
@@ -68,6 +70,9 @@ pub fn ui(f: &mut Frame, app: &App) {
     // Render search bar if in search mode or has query
     if app.search_mode || !app.search_query.is_empty() {
         render_search_bar(f, app, chunks[3]);
+        render_legend(f, chunks[4]);
+    } else {
+        render_legend(f, chunks[3]);
     }
 
     // Render popups (order matters for layering)
