@@ -1,6 +1,7 @@
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
@@ -832,6 +833,8 @@ pub fn render_legend(f: &mut Frame, area: Rect) {
         Span::raw(" checkout  "),
         Span::styled("/", Style::default().fg(Color::Yellow)),
         Span::raw(" search  "),
+        Span::styled("p", Style::default().fg(Color::Yellow)),
+        Span::raw(" preview  "),
         Span::styled("w", Style::default().fg(Color::Yellow)),
         Span::raw(" workflows  "),
         Span::styled("l", Style::default().fg(Color::Yellow)),
@@ -844,4 +847,394 @@ pub fn render_legend(f: &mut Frame, area: Rect) {
 
     let paragraph = Paragraph::new(legend).style(Style::default().fg(Color::DarkGray));
     f.render_widget(paragraph, area);
+}
+
+/// Render the PR preview view with markdown-rendered comments
+pub fn render_preview_view(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    // Get PR info for title
+    let title = if let Some((ref pr_title, pr_number)) = app.preview_pr_info {
+        format!(" #{} - {} ", pr_number, truncate_string(pr_title, 60))
+    } else {
+        " Preview ".to_string()
+    };
+
+    // Add loading indicator if loading
+    let title = if app.preview_loading {
+        format!("{} {} ", app.spinner(), title.trim())
+    } else {
+        title
+    };
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(Color::Cyan).bold())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into content and footer
+    let layout = Layout::vertical([
+        Constraint::Min(1),    // Content
+        Constraint::Length(2), // Footer
+    ])
+    .split(inner_area);
+
+    let content_area = layout[0];
+    let footer_area = layout[1];
+
+    // Render footer
+    let footer_line = Line::from(vec![
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(" scroll  "),
+        Span::styled("tab/S-tab", Style::default().fg(Color::Yellow)),
+        Span::raw(" section  "),
+        Span::styled("g/G", Style::default().fg(Color::Yellow)),
+        Span::raw(" top/bottom  "),
+        Span::styled("o", Style::default().fg(Color::Yellow)),
+        Span::raw(" open  "),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(" back"),
+    ]);
+    let footer = Paragraph::new(vec![Line::raw(""), footer_line]);
+    f.render_widget(footer, footer_area);
+
+    // Render content
+    if app.preview_loading && app.preview_data.is_none() {
+        let loading = Paragraph::new(vec![Line::from(vec![
+            Span::styled(app.spinner(), Style::default().fg(Color::Yellow)),
+            Span::raw(" Loading PR preview..."),
+        ])]);
+        f.render_widget(loading, content_area);
+    } else if let Some(ref data) = app.preview_data {
+        let mut lines: Vec<Line> = Vec::new();
+
+        for (idx, comment) in data.comments.iter().enumerate() {
+            // Add separator between comments
+            if idx > 0 {
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(
+                    "─".repeat(content_area.width as usize - 2),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                lines.push(Line::raw(""));
+            }
+
+            // Comment header
+            let header_label = if comment.is_pr_body {
+                "Description"
+            } else {
+                "Comment"
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", header_label),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(
+                    format!("by {}", comment.author),
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
+            lines.push(Line::raw(""));
+
+            // Render markdown body
+            let md_lines = markdown_to_lines(&comment.body, content_area.width as usize - 2);
+            lines.extend(md_lines);
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::styled(
+                "No description or comments available.",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        let content = Paragraph::new(lines)
+            .scroll((app.preview_scroll, 0))
+            .wrap(Wrap { trim: false });
+        f.render_widget(content, content_area);
+    } else {
+        let empty = Paragraph::new("No preview data available");
+        f.render_widget(empty, content_area);
+    }
+}
+
+/// Convert markdown text to styled ratatui Lines (skipping images and videos)
+fn markdown_to_lines(markdown: &str, _max_width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_text = String::new();
+
+    // Style state
+    let mut bold = false;
+    let mut italic = false;
+    let code = false;
+    let mut heading_color: Option<Color> = None;
+    let mut in_code_block = false;
+    let mut in_image = false;
+    let mut image_alt = String::new();
+    let mut image_url = String::new();
+
+    let parser = Parser::new(markdown);
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Heading { level, .. } => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                    // Add blank line before headings for spacing
+                    if !lines.is_empty() {
+                        lines.push(Line::raw(""));
+                    }
+                    // Heading style - color based on level, no # prefix
+                    bold = true;
+                    heading_color = Some(match level {
+                        pulldown_cmark::HeadingLevel::H1 => Color::Cyan,
+                        pulldown_cmark::HeadingLevel::H2 => Color::Green,
+                        pulldown_cmark::HeadingLevel::H3 => Color::Yellow,
+                        _ => Color::Magenta,
+                    });
+                }
+                Tag::Paragraph => {
+                    if !current_spans.is_empty() || !current_text.is_empty() {
+                        flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                        if !current_spans.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut current_spans)));
+                        }
+                        lines.push(Line::raw(""));
+                    }
+                }
+                Tag::CodeBlock(_) => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                    in_code_block = true;
+                }
+                Tag::List(_) => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                }
+                Tag::Item => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    current_spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
+                }
+                Tag::Strong => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    bold = true;
+                }
+                Tag::Emphasis => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    italic = true;
+                }
+                Tag::Link { .. } => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                }
+                Tag::Image { dest_url, .. } => {
+                    // Capture image info to show as raw markdown
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    in_image = true;
+                    image_url = dest_url.to_string();
+                    image_alt.clear();
+                }
+                _ => {}
+            },
+            Event::End(tag_end) => match tag_end {
+                TagEnd::Heading(_) => {
+                    flush_heading_text(&mut current_text, &mut current_spans, heading_color);
+                    bold = false;
+                    heading_color = None;
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                    lines.push(Line::raw(""));
+                }
+                TagEnd::Paragraph => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                }
+                TagEnd::CodeBlock => {
+                    in_code_block = false;
+                    lines.push(Line::raw(""));
+                }
+                TagEnd::List(_) => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                }
+                TagEnd::Item => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                }
+                TagEnd::Strong => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    bold = false;
+                }
+                TagEnd::Emphasis => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    italic = false;
+                }
+                TagEnd::Link => {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                }
+                TagEnd::Image => {
+                    // Output the image as raw markdown text
+                    let raw_md = format!("![{}]({})", image_alt, image_url);
+                    current_spans.push(Span::styled(
+                        raw_md,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    in_image = false;
+                    image_alt.clear();
+                    image_url.clear();
+                }
+                _ => {}
+            },
+            Event::Text(text) => {
+                if in_image {
+                    // Capture alt text for image
+                    image_alt.push_str(&text);
+                    continue;
+                }
+                if in_code_block {
+                    // Code block - render each line with gray background
+                    for line in text.lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", line),
+                            Style::default().fg(Color::Gray),
+                        )));
+                    }
+                } else {
+                    current_text.push_str(&text);
+                }
+            }
+            Event::Code(code_text) => {
+                if in_image {
+                    continue;
+                }
+                flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                current_spans.push(Span::styled(
+                    format!("`{}`", code_text),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if !in_code_block && !in_image {
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    if !current_spans.is_empty() {
+                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                }
+            }
+            Event::Html(html) => {
+                // Show HTML content as raw text (video embeds, iframes, etc.)
+                let html_lower = html.to_lowercase();
+                if html_lower.contains("<video")
+                    || html_lower.contains("<img")
+                    || html_lower.contains("<iframe")
+                {
+                    // Show as raw HTML in gray
+                    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+                    current_spans.push(Span::styled(
+                        html.trim().to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Flush any remaining content
+    flush_text(&mut current_text, &mut current_spans, bold, italic, code);
+    if !current_spans.is_empty() {
+        lines.push(Line::from(current_spans));
+    }
+
+    lines
+}
+
+/// Flush accumulated text to spans with appropriate styling
+fn flush_text(
+    text: &mut String,
+    spans: &mut Vec<Span<'static>>,
+    bold: bool,
+    italic: bool,
+    _code: bool,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let mut style = Style::default();
+    if bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+
+    spans.push(Span::styled(std::mem::take(text), style));
+}
+
+/// Flush accumulated text for headings with color
+fn flush_heading_text(
+    text: &mut String,
+    spans: &mut Vec<Span<'static>>,
+    color: Option<Color>,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let style = if let Some(c) = color {
+        Style::default().fg(c).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+
+    spans.push(Span::styled(std::mem::take(text), style));
+}
+
+/// Calculate the line positions of each comment in the preview view
+/// Returns (comment_positions, total_lines)
+pub fn calculate_preview_positions(comments: &[crate::data::PrComment], width: usize) -> (Vec<u16>, u16) {
+    let mut positions: Vec<u16> = Vec::new();
+    let mut current_line: u16 = 0;
+
+    for (idx, comment) in comments.iter().enumerate() {
+        // Record the start position of this comment
+        positions.push(current_line);
+
+        // Count separator lines (3 lines if not first: blank + separator + blank)
+        if idx > 0 {
+            current_line += 3;
+        }
+
+        // Header line (e.g., "Description by author")
+        current_line += 1;
+        // Blank line after header
+        current_line += 1;
+
+        // Count markdown body lines
+        let md_lines = markdown_to_lines(&comment.body, width.saturating_sub(2));
+        current_line += md_lines.len() as u16;
+    }
+
+    (positions, current_line)
 }

@@ -67,6 +67,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
+        // Check for preview fetch results
+        if let Some(result) = app.check_preview_result() {
+            if let Some(cmd) = update(app, Message::PreviewDataReceived(result)) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
         // Auto-poll actions if workflows view is open and has pending jobs
         if app.should_poll_actions() {
             if let Some(cmd) = update(app, Message::RefreshActions) {
@@ -119,6 +128,10 @@ fn handle_command(app: &mut App, cmd: Command) -> bool {
         }
         Command::StartJobLogsFetch(owner, repo, job_id, job_name) => {
             app.start_job_logs_fetch(&owner, &repo, job_id, &job_name);
+            false
+        }
+        Command::StartPreviewFetch(owner, repo, pr_number) => {
+            app.start_preview_fetch(&owner, &repo, pr_number);
             false
         }
     }
@@ -186,6 +199,21 @@ fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
         };
     }
 
+    // Preview view
+    if app.show_preview_view {
+        return match key {
+            KeyCode::Esc | KeyCode::Char('q') => Some(Message::ClosePreviewView),
+            KeyCode::Char('j') | KeyCode::Down => Some(Message::PreviewScrollDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Message::PreviewScrollUp),
+            KeyCode::Tab => Some(Message::PreviewNextSection),
+            KeyCode::BackTab => Some(Message::PreviewPreviousSection),
+            KeyCode::Char('g') => Some(Message::PreviewGoToTop),
+            KeyCode::Char('G') => Some(Message::PreviewGoToBottom),
+            KeyCode::Char('o') => Some(Message::OpenSelected),
+            _ => None,
+        };
+    }
+
     // Add label popup
     if app.show_add_label_popup {
         return match key {
@@ -242,6 +270,7 @@ fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
         KeyCode::Char('?') => Some(Message::ToggleHelp),
         KeyCode::Char('l') => Some(Message::OpenLabelsPopup),
         KeyCode::Char('w') => Some(Message::OpenWorkflowsView),
+        KeyCode::Char('p') => Some(Message::OpenPreviewView),
         KeyCode::Char('1') => Some(Message::SwitchTab(PrFilter::MyPrs)),
         KeyCode::Char('2') => Some(Message::SwitchTab(PrFilter::ReviewRequested)),
         KeyCode::Char('3') => {

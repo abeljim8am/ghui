@@ -5,6 +5,7 @@ use crate::data::{AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowJ
 use crate::icons;
 use crate::services::{delete_label_filter, filter_prs, load_label_filters, save_label_filter};
 use crate::utils::checkout_branch;
+use crate::view::calculate_preview_positions;
 
 use super::message::{Command, FetchResult, Message};
 use super::model::App;
@@ -212,9 +213,61 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
             None
         }
 
+        // Preview view
+        Message::OpenPreviewView => open_preview_view(app),
+        Message::ClosePreviewView => {
+            close_preview_view(app);
+            None
+        }
+        Message::PreviewDataReceived(result) => {
+            handle_preview_result(app, result);
+            None
+        }
+        Message::PreviewScrollUp => {
+            if app.preview_scroll > 0 {
+                app.preview_scroll = app.preview_scroll.saturating_sub(3);
+            }
+            None
+        }
+        Message::PreviewScrollDown => {
+            // Clamp scroll to avoid showing empty space beyond content
+            let max_scroll = app.preview_total_lines.saturating_sub(5);
+            let new_scroll = app.preview_scroll.saturating_add(3);
+            app.preview_scroll = new_scroll.min(max_scroll);
+            None
+        }
+        Message::PreviewNextSection => {
+            preview_next_section(app);
+            None
+        }
+        Message::PreviewPreviousSection => {
+            preview_previous_section(app);
+            None
+        }
+        Message::PreviewGoToTop => {
+            app.preview_scroll = 0;
+            app.preview_section_index = 0;
+            None
+        }
+        Message::PreviewGoToBottom => {
+            // Scroll to show the end of content (leave some visible lines at top)
+            let visible_height = 20u16; // Approximate visible height
+            if app.preview_total_lines > visible_height {
+                app.preview_scroll = app.preview_total_lines.saturating_sub(visible_height);
+            } else {
+                app.preview_scroll = 0;
+            }
+            if let Some(ref data) = app.preview_data {
+                if !data.comments.is_empty() {
+                    app.preview_section_index = data.comments.len() - 1;
+                }
+            }
+            None
+        }
+
         // Clear clipboard feedback after timeout
         Message::Tick => {
-            if app.loading_my_prs || app.loading_review_prs || app.loading_labels_prs || app.actions_loading || app.job_logs_loading {
+            if app.loading_my_prs || app.loading_review_prs || app.loading_labels_prs || app.actions_loading || app.job_logs_loading || app.preview_loading {
                 app.update_spinner();
             }
             // Clear clipboard feedback after 2 seconds
@@ -529,9 +582,10 @@ fn handle_fetch_result(app: &mut App, result: FetchResult) -> Option<Command> {
             app.loading_labels_prs = false;
             None
         }
-        // Handled separately by handle_actions_result and handle_job_logs_result
+        // Handled separately by handle_actions_result, handle_job_logs_result, handle_preview_result
         FetchResult::ActionsSuccess(_) | FetchResult::ActionsError(_) => None,
         FetchResult::JobLogsSuccess(_) | FetchResult::JobLogsError(_) => None,
+        FetchResult::PreviewSuccess(_) | FetchResult::PreviewError(_) => None,
     }
 }
 
@@ -949,4 +1003,80 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 
     child.wait().is_ok()
+}
+
+// Preview view helpers
+
+fn open_preview_view(app: &mut App) -> Option<Command> {
+    // Clone the needed data first to avoid borrow issues
+    let pr_data = app.selected_pr().map(|pr| {
+        (
+            pr.repo_owner.clone(),
+            pr.repo_name.clone(),
+            pr.number,
+            pr.title.clone(),
+        )
+    });
+
+    if let Some((owner, repo, number, title)) = pr_data {
+        app.show_preview_view = true;
+        app.preview_loading = true;
+        app.preview_data = None;
+        app.preview_scroll = 0;
+        app.preview_pr_info = Some((title, number));
+        return Some(Command::StartPreviewFetch(owner, repo, number));
+    }
+    None
+}
+
+fn close_preview_view(app: &mut App) {
+    app.show_preview_view = false;
+    app.preview_data = None;
+    app.preview_loading = false;
+    app.preview_scroll = 0;
+    app.preview_section_index = 0;
+    app.preview_comment_positions.clear();
+    app.preview_total_lines = 0;
+    app.preview_pr_info = None;
+}
+
+fn preview_next_section(app: &mut App) {
+    let num_comments = app.preview_comment_positions.len();
+    if num_comments > 0 && app.preview_section_index < num_comments - 1 {
+        app.preview_section_index += 1;
+        // Use stored position directly
+        if let Some(&pos) = app.preview_comment_positions.get(app.preview_section_index) {
+            app.preview_scroll = pos;
+        }
+    }
+}
+
+fn preview_previous_section(app: &mut App) {
+    if app.preview_section_index > 0 {
+        app.preview_section_index -= 1;
+        // Use stored position directly
+        if let Some(&pos) = app.preview_comment_positions.get(app.preview_section_index) {
+            app.preview_scroll = pos;
+        }
+    }
+}
+
+fn handle_preview_result(app: &mut App, result: FetchResult) {
+    match result {
+        FetchResult::PreviewSuccess(data) => {
+            // Calculate comment positions for navigation
+            // Use a reasonable default width (80 columns) for position calculation
+            let (positions, total_lines) = calculate_preview_positions(&data.comments, 80);
+            app.preview_comment_positions = positions;
+            app.preview_total_lines = total_lines;
+            app.preview_data = Some(data);
+            app.preview_loading = false;
+        }
+        FetchResult::PreviewError(e) => {
+            app.preview_loading = false;
+            app.error = Some(e);
+            app.show_error_popup = true;
+        }
+        _ => {}
+    }
 }

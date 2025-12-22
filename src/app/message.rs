@@ -1,4 +1,4 @@
-use crate::data::{ActionsData, JobLogs, PrFilter, PullRequest};
+use crate::data::{ActionsData, JobLogs, PrFilter, PreviewData, PullRequest};
 
 /// Result from an async fetch operation
 pub enum FetchResult {
@@ -8,6 +8,8 @@ pub enum FetchResult {
     ActionsError(String),
     JobLogsSuccess(JobLogs),
     JobLogsError(String),
+    PreviewSuccess(PreviewData),
+    PreviewError(String),
 }
 
 /// Command to be executed after update
@@ -17,6 +19,7 @@ pub enum Command {
     ExitAfterCheckout,
     StartActionsFetch(String, String, u64, String), // owner, repo, pr_number, head_sha
     StartJobLogsFetch(String, String, u64, String), // owner, repo, job_id, job_name
+    StartPreviewFetch(String, String, u64),         // owner, repo, pr_number
 }
 
 /// All possible messages/events in the application
@@ -83,6 +86,17 @@ pub enum Message {
     AnnotationPrevious,
     ToggleAnnotationSelection,
     CopyAnnotations,
+
+    // Preview view
+    OpenPreviewView,
+    ClosePreviewView,
+    PreviewDataReceived(FetchResult),
+    PreviewScrollUp,
+    PreviewScrollDown,
+    PreviewNextSection,
+    PreviewPreviousSection,
+    PreviewGoToTop,
+    PreviewGoToBottom,
 
     // Async results
     FetchComplete(FetchResult),

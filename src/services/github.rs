@@ -2,7 +2,7 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use std::process::Command;
 
-use crate::data::{ActionsData, CheckAnnotation, CiStatus, JobLogs, PrFilter, PullRequest, SearchGraphQLResponse, SearchNode, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
+use crate::data::{ActionsData, CheckAnnotation, CiStatus, JobLogs, PrComment, PrFilter, PreviewData, PullRequest, SearchGraphQLResponse, SearchNode, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
 use crate::utils::get_current_repo;
 
 pub fn get_github_token() -> Result<String> {
@@ -583,5 +583,134 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
         } else {
             content
         },
+    })
+}
+
+/// Fetch PR body and comments for the preview view
+pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result<PreviewData> {
+    let token = get_github_token()?;
+    let octocrab = Octocrab::builder().personal_token(token).build()?;
+
+    // GraphQL query to get PR body and comments
+    let query = r#"
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
+                    title
+                    body
+                    author {
+                        login
+                    }
+                    createdAt
+                    comments(first: 100) {
+                        nodes {
+                            author {
+                                login
+                            }
+                            body
+                            createdAt
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let response: serde_json::Value = octocrab
+        .graphql(&serde_json::json!({
+            "query": query,
+            "variables": {
+                "owner": owner,
+                "repo": repo,
+                "prNumber": pr_number as i64
+            }
+        }))
+        .await?;
+
+    let pr = response
+        .get("data")
+        .and_then(|d| d.get("repository"))
+        .and_then(|r| r.get("pullRequest"))
+        .ok_or_else(|| anyhow::anyhow!("Failed to fetch PR data"))?;
+
+    let title = pr
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    let body = pr
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let author = pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let created_at = pr
+        .get("createdAt")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut comments = Vec::new();
+
+    // Add PR body as first "comment"
+    if !body.is_empty() {
+        comments.push(PrComment {
+            author: author.clone(),
+            body,
+            created_at: created_at.clone(),
+            is_pr_body: true,
+        });
+    }
+
+    // Add actual comments
+    if let Some(comment_nodes) = pr
+        .get("comments")
+        .and_then(|c| c.get("nodes"))
+        .and_then(|n| n.as_array())
+    {
+        for comment in comment_nodes {
+            let comment_author = comment
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let comment_body = comment
+                .get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let comment_created = comment
+                .get("createdAt")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if !comment_body.is_empty() {
+                comments.push(PrComment {
+                    author: comment_author,
+                    body: comment_body,
+                    created_at: comment_created,
+                    is_pr_body: false,
+                });
+            }
+        }
+    }
+
+    Ok(PreviewData {
+        pr_number,
+        title,
+        comments,
+        error: None,
     })
 }

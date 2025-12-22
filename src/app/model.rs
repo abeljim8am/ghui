@@ -4,8 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::data::{ActionsData, CheckAnnotation, JobLogs, LabelFilter, PrFilter, PullRequest, SPINNER_FRAMES};
-use crate::services::{fetch_actions_for_pr, fetch_job_logs, fetch_prs_graphql, load_cache, load_label_filters, save_cache};
+use crate::data::{ActionsData, CheckAnnotation, JobLogs, LabelFilter, PrFilter, PreviewData, PullRequest, SPINNER_FRAMES};
+use crate::services::{fetch_actions_for_pr, fetch_job_logs, fetch_pr_preview, fetch_prs_graphql, load_cache, load_label_filters, save_cache};
 use crate::utils::get_current_repo;
 
 use super::message::FetchResult;
@@ -60,6 +60,16 @@ pub struct App {
     pub selected_annotation_index: usize,
     pub selected_annotations: Vec<usize>,  // indices of selected annotations for copying
 
+    // Preview view state
+    pub show_preview_view: bool,
+    pub preview_data: Option<PreviewData>,
+    pub preview_loading: bool,
+    pub preview_scroll: u16,
+    pub preview_section_index: usize,
+    pub preview_comment_positions: Vec<u16>, // line positions of each comment start
+    pub preview_total_lines: u16,
+    pub preview_pr_info: Option<(String, u64)>, // (title, number) for display
+
     // Clipboard feedback
     pub clipboard_feedback: Option<String>,
     pub clipboard_feedback_time: Instant,
@@ -90,6 +100,10 @@ pub struct App {
     // Job logs async communication
     pub job_logs_tx: Sender<(String, String, u64, String)>, // owner, repo, job_id, job_name
     pub job_logs_rx: Receiver<FetchResult>,
+
+    // Preview async communication
+    pub preview_tx: Sender<(String, String, u64)>, // owner, repo, pr_number
+    pub preview_rx: Receiver<FetchResult>,
 
     // Spinner state
     pub spinner_idx: usize,
@@ -165,6 +179,25 @@ impl App {
             }
         });
 
+        // Channel for preview fetching
+        let (preview_tx, preview_rx_internal) = mpsc::channel::<(String, String, u64)>();
+        let (preview_result_tx, preview_rx) = mpsc::channel::<FetchResult>();
+
+        // Spawn background thread for fetching PR preview/comments
+        thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            while let Ok((owner, repo, pr_number)) = preview_rx_internal.recv() {
+                let result = rt.block_on(fetch_pr_preview(&owner, &repo, pr_number));
+                let msg = match result {
+                    Ok(data) => FetchResult::PreviewSuccess(data),
+                    Err(e) => FetchResult::PreviewError(format!("{}", e)),
+                };
+                if preview_result_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+
         // Get repo info for loading cache
         let (owner, repo_name) = get_current_repo().unzip();
 
@@ -229,6 +262,14 @@ impl App {
             annotations: Vec::new(),
             selected_annotation_index: 0,
             selected_annotations: Vec::new(),
+            show_preview_view: false,
+            preview_data: None,
+            preview_loading: false,
+            preview_scroll: 0,
+            preview_section_index: 0,
+            preview_comment_positions: Vec::new(),
+            preview_total_lines: 0,
+            preview_pr_info: None,
             clipboard_feedback: None,
             clipboard_feedback_time: Instant::now(),
             error: None,
@@ -244,6 +285,8 @@ impl App {
             actions_rx,
             job_logs_tx,
             job_logs_rx,
+            preview_tx,
+            preview_rx,
             spinner_idx: 0,
             last_spinner_update: Instant::now(),
         })
@@ -360,5 +403,22 @@ impl App {
             && self.actions_poll_enabled
             && !self.actions_loading
             && self.last_actions_poll.elapsed() >= Duration::from_secs(30)
+    }
+
+    // Preview fetch management
+
+    pub fn start_preview_fetch(&mut self, owner: &str, repo: &str, pr_number: u64) {
+        self.preview_loading = true;
+        self.preview_data = None;
+        self.preview_scroll = 0;
+        let _ = self.preview_tx.send((
+            owner.to_string(),
+            repo.to_string(),
+            pr_number,
+        ));
+    }
+
+    pub fn check_preview_result(&mut self) -> Option<FetchResult> {
+        self.preview_rx.try_recv().ok()
     }
 }

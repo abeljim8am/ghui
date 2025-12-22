@@ -309,3 +309,21 @@ pub struct ActionsData {
     pub workflow_runs: Vec<WorkflowRun>,
     pub error: Option<String>,
 }
+
+/// A comment on a PR (either PR body or review comment)
+#[derive(Debug, Clone)]
+pub struct PrComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub is_pr_body: bool,
+}
+
+/// Container for PR preview data (description + comments)
+#[derive(Debug, Clone)]
+pub struct PreviewData {
+    pub pr_number: u64,
+    pub title: String,
+    pub comments: Vec<PrComment>,
+    pub error: Option<String>,
+}
