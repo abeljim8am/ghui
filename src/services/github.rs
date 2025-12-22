@@ -591,7 +591,7 @@ pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result
     let token = get_github_token()?;
     let octocrab = Octocrab::builder().personal_token(token).build()?;
 
-    // GraphQL query to get PR body and comments
+    // GraphQL query to get PR body, comments, and reviews
     let query = r#"
         query($owner: String!, $repo: String!, $prNumber: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -608,6 +608,16 @@ pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result
                                 login
                             }
                             body
+                            createdAt
+                        }
+                    }
+                    reviews(first: 100) {
+                        nodes {
+                            author {
+                                login
+                            }
+                            body
+                            state
                             createdAt
                         }
                     }
@@ -670,6 +680,9 @@ pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result
         });
     }
 
+    // Collect all comments and reviews with timestamps for sorting
+    let mut all_items: Vec<(String, PrComment)> = Vec::new();
+
     // Add actual comments
     if let Some(comment_nodes) = pr
         .get("comments")
@@ -697,14 +710,90 @@ pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result
                 .to_string();
 
             if !comment_body.is_empty() {
-                comments.push(PrComment {
-                    author: comment_author,
-                    body: comment_body,
-                    created_at: comment_created,
-                    is_pr_body: false,
-                });
+                all_items.push((
+                    comment_created.clone(),
+                    PrComment {
+                        author: comment_author,
+                        body: comment_body,
+                        created_at: comment_created,
+                        is_pr_body: false,
+                    },
+                ));
             }
         }
+    }
+
+    // Add reviews (Request Changes, Approved, etc.)
+    if let Some(review_nodes) = pr
+        .get("reviews")
+        .and_then(|r| r.get("nodes"))
+        .and_then(|n| n.as_array())
+    {
+        for review in review_nodes {
+            let review_author = review
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let review_body = review
+                .get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let review_state = review
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let review_created = review
+                .get("createdAt")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Skip empty "COMMENTED" reviews (just noise)
+            if review_state == "COMMENTED" && review_body.is_empty() {
+                continue;
+            }
+
+            // Format review state for display (using nerdfont icons)
+            let state_prefix = match review_state.as_str() {
+                "APPROVED" => format!("{} Approved", crate::icons::REVIEW_APPROVED),
+                "CHANGES_REQUESTED" => format!("{} Changes Requested", crate::icons::REVIEW_CHANGES_REQUESTED),
+                "COMMENTED" => format!("{} Review", crate::icons::REVIEW_COMMENTED),
+                "DISMISSED" => format!("{} Dismissed", crate::icons::REVIEW_DISMISSED),
+                _ => continue, // Skip unknown/pending states with no useful info
+            };
+
+            // Include reviews even if body is empty (to show the approval/request status)
+            let display_body = if review_body.is_empty() {
+                format!("_{}_", state_prefix)
+            } else {
+                format!("**{}**\n\n{}", state_prefix, review_body)
+            };
+
+            all_items.push((
+                review_created.clone(),
+                PrComment {
+                    author: review_author,
+                    body: display_body,
+                    created_at: review_created,
+                    is_pr_body: false,
+                },
+            ));
+        }
+    }
+
+    // Sort by created_at timestamp
+    all_items.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Add sorted items to comments
+    for (_, comment) in all_items {
+        comments.push(comment);
     }
 
     Ok(PreviewData {

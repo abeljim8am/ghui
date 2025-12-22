@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -99,7 +99,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    let msg = key_to_message(app, key.code);
+                    let msg = key_to_message(app, key.code, key.modifiers);
                     if let Some(msg) = msg {
                         if let Some(cmd) = update(app, msg) {
                             if handle_command(app, cmd) {
@@ -138,7 +138,7 @@ fn handle_command(app: &mut App, cmd: Command) -> bool {
 }
 
 /// Convert a key press to a message based on current app state
-fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
+fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Message> {
     // Help popup - any key dismisses
     if app.show_help_popup {
         return Some(Message::DismissHelp);
@@ -201,12 +201,18 @@ fn key_to_message(app: &App, key: KeyCode) -> Option<Message> {
 
     // Preview view
     if app.show_preview_view {
+        // Handle Ctrl+D and Ctrl+U for half-page scrolling
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            return match key {
+                KeyCode::Char('d') => Some(Message::PreviewScrollDown),
+                KeyCode::Char('u') => Some(Message::PreviewScrollUp),
+                _ => None,
+            };
+        }
         return match key {
             KeyCode::Esc | KeyCode::Char('q') => Some(Message::ClosePreviewView),
             KeyCode::Char('j') | KeyCode::Down => Some(Message::PreviewScrollDown),
             KeyCode::Char('k') | KeyCode::Up => Some(Message::PreviewScrollUp),
-            KeyCode::Tab => Some(Message::PreviewNextSection),
-            KeyCode::BackTab => Some(Message::PreviewPreviousSection),
             KeyCode::Char('g') => Some(Message::PreviewGoToTop),
             KeyCode::Char('G') => Some(Message::PreviewGoToBottom),
             KeyCode::Char('o') => Some(Message::OpenSelected),

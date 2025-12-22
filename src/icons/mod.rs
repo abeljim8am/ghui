@@ -54,3 +54,9 @@ pub const EMOJI_MESSAGE: &str = "󰻞  ";
 // List/UI elements
 pub const BULLET: &str = "•";
 pub const SEPARATOR_CHAR: &str = "─";
+
+// Review state icons
+pub const REVIEW_APPROVED: &str = "✓";
+pub const REVIEW_CHANGES_REQUESTED: &str = "✗";
+pub const REVIEW_COMMENTED: &str = "󰆉";
+pub const REVIEW_DISMISSED: &str = "◯";

@@ -890,8 +890,8 @@ pub fn render_preview_view(f: &mut Frame, app: &App) {
     let footer_line = Line::from(vec![
         Span::styled("j/k", Style::default().fg(Color::Yellow)),
         Span::raw(" scroll  "),
-        Span::styled("tab/S-tab", Style::default().fg(Color::Yellow)),
-        Span::raw(" section  "),
+        Span::styled("^d/^u", Style::default().fg(Color::Yellow)),
+        Span::raw(" page  "),
         Span::styled("g/G", Style::default().fg(Color::Yellow)),
         Span::raw(" top/bottom  "),
         Span::styled("o", Style::default().fg(Color::Yellow)),
@@ -1218,13 +1218,13 @@ pub fn calculate_preview_positions(comments: &[crate::data::PrComment], width: u
     let mut current_line: u16 = 0;
 
     for (idx, comment) in comments.iter().enumerate() {
-        // Record the start position of this comment
-        positions.push(current_line);
-
-        // Count separator lines (3 lines if not first: blank + separator + blank)
+        // Count separator lines first (3 lines if not first: blank + separator + blank)
         if idx > 0 {
             current_line += 3;
         }
+
+        // Record the start position of this comment (at the header, after separator)
+        positions.push(current_line);
 
         // Header line (e.g., "Description by author")
         current_line += 1;
