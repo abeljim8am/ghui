@@ -1,16 +1,44 @@
 use std::process::Command;
 
 pub fn get_current_repo() -> Option<(String, String)> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
+    // Check if repo uses jj by looking for .jj directory
+    let has_jj = std::path::Path::new(".jj").exists();
+
+    let output = if has_jj {
+        // For jujutsu repos, use jj git remote list
+        Command::new("jj")
+            .args(["git", "remote", "list"])
+            .output()
+            .ok()?
+    } else {
+        // For git repos, use git remote get-url
+        Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .ok()?
+    };
 
     if !output.status.success() {
         return None;
     }
 
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    let url = if has_jj {
+        // Parse jj git remote list output: "origin <url> (fetch)"
+        // We only care about the origin remote
+        output_str
+            .lines()
+            .find(|line| line.starts_with("origin "))
+            .and_then(|line| {
+                // Split by whitespace and get the URL (second field)
+                line.split_whitespace().nth(1)
+            })?
+            .to_string()
+    } else {
+        output_str.trim().to_string()
+    };
+
     parse_github_url(&url)
 }
 
