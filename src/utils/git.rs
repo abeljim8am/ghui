@@ -76,9 +76,20 @@ pub fn checkout_branch(branch: &str) -> Result<(), String> {
     let has_jj = std::path::Path::new(".jj").exists();
 
     let result = if has_jj {
-        Command::new("jj")
-            .args(["new", &format!("{}@origin", branch)])
-            .output()
+        // Try edit first
+        let edit_result = Command::new("jj")
+            .args(["edit", &format!("{}@origin", branch)])
+            .output();
+
+        match edit_result {
+            Ok(output) if output.status.success() => Ok(output),
+            _ => {
+                // If edit fails, fall back to new
+                Command::new("jj")
+                    .args(["new", &format!("{}@origin", branch)])
+                    .output()
+            }
+        }
     } else {
         Command::new("git").args(["switch", branch]).output()
     };
