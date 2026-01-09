@@ -48,6 +48,9 @@ pub struct App {
     pub actions_pending_pr_number: Option<u64>, // PR we're waiting to get head_sha for
     pub workflows_pr_info: Option<(String, u64)>, // (title, number) for display
 
+    // Main page auto-refresh state
+    pub last_main_refresh: Instant,
+
     // Job logs state
     pub show_job_logs: bool,
     pub job_logs: Option<JobLogs>,
@@ -254,6 +257,7 @@ impl App {
             last_actions_poll: Instant::now(),
             actions_pending_pr_number: None,
             workflows_pr_info: None,
+            last_main_refresh: Instant::now(),
             show_job_logs: false,
             job_logs: None,
             job_logs_loading: false,
@@ -356,6 +360,7 @@ impl App {
         }
         self.error = None;
         self.show_error_popup = false;
+        self.last_main_refresh = Instant::now();
         let _ = self.fetch_tx.send(filter);
     }
 
@@ -403,6 +408,19 @@ impl App {
             && self.actions_poll_enabled
             && !self.actions_loading
             && self.last_actions_poll.elapsed() >= Duration::from_secs(30)
+    }
+
+    pub fn should_refresh_main(&self) -> bool {
+        // Only auto-refresh when on the main page (not in any special views or popups)
+        !self.show_workflows_view
+            && !self.show_preview_view
+            && !self.show_help_popup
+            && !self.show_checkout_popup
+            && !self.show_error_popup
+            && !self.show_labels_popup
+            && !self.show_add_label_popup
+            && !self.is_loading()
+            && self.last_main_refresh.elapsed() >= Duration::from_secs(30)
     }
 
     // Preview fetch management

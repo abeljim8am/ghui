@@ -85,6 +85,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
+        // Auto-refresh main page every 30 seconds
+        if app.should_refresh_main() {
+            if let Some(cmd) = update(app, Message::Refresh) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
         // Update spinner
         if let Some(cmd) = update(app, Message::Tick) {
             if handle_command(app, cmd) {
