@@ -2,7 +2,11 @@ use anyhow::Result;
 use octocrab::Octocrab;
 use std::process::Command;
 
-use crate::data::{ActionsData, CheckAnnotation, CiStatus, JobLogs, PrComment, PrFilter, PreviewData, PullRequest, SearchGraphQLResponse, SearchNode, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
+use crate::data::{
+    ActionsData, CheckAnnotation, CiStatus, JobLogs, PrComment, PrFilter, PreviewData, PullRequest,
+    SearchGraphQLResponse, SearchNode, WorkflowConclusion, WorkflowJob, WorkflowRun,
+    WorkflowStatus,
+};
 use crate::utils::get_current_repo;
 
 pub fn get_github_token() -> Result<String> {
@@ -44,10 +48,7 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
         // Fetch PRs for each label separately
         let mut all_prs = Vec::new();
         for label in labels {
-            let query_string = format!(
-                "repo:{}/{} is:pr is:open label:\"{}\"",
-                owner, repo, label
-            );
+            let query_string = format!("repo:{}/{} is:pr is:open label:\"{}\"", owner, repo, label);
             let prs = fetch_prs_for_query(&octocrab, query_string, &owner, &repo).await?;
             all_prs.extend(prs);
         }
@@ -294,7 +295,10 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
         .ok_or_else(|| anyhow::anyhow!("No commit data found"))?;
 
     // Parse check suites (GitHub Actions, CircleCI checks, etc.)
-    if let Some(check_suites) = commit.pointer("/checkSuites/nodes").and_then(|v| v.as_array()) {
+    if let Some(check_suites) = commit
+        .pointer("/checkSuites/nodes")
+        .and_then(|v| v.as_array())
+    {
         for (idx, suite) in check_suites.iter().enumerate() {
             let app_name = suite
                 .pointer("/app/name")
@@ -319,10 +323,7 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
             let mut jobs = Vec::new();
             if let Some(check_runs) = suite.pointer("/checkRuns/nodes").and_then(|v| v.as_array()) {
                 for run in check_runs {
-                    let database_id = run
-                        .get("databaseId")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let database_id = run.get("databaseId").and_then(|v| v.as_u64()).unwrap_or(0);
 
                     let name = run
                         .get("name")
@@ -367,7 +368,9 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
 
                     // Parse annotations
                     let mut annotations = Vec::new();
-                    if let Some(annotation_nodes) = run.pointer("/annotations/nodes").and_then(|v| v.as_array()) {
+                    if let Some(annotation_nodes) =
+                        run.pointer("/annotations/nodes").and_then(|v| v.as_array())
+                    {
                         for ann in annotation_nodes {
                             let path = ann
                                 .get("path")
@@ -383,7 +386,8 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
                             let end_line = ann
                                 .pointer("/location/end/line")
                                 .and_then(|v| v.as_u64())
-                                .unwrap_or(start_line as u64) as u32;
+                                .unwrap_or(start_line as u64)
+                                as u32;
 
                             let level_str = ann
                                 .get("annotationLevel")
@@ -447,7 +451,10 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
     }
 
     // Parse legacy commit statuses (some CI systems use this instead of checks)
-    if let Some(contexts) = commit.pointer("/status/contexts").and_then(|v| v.as_array()) {
+    if let Some(contexts) = commit
+        .pointer("/status/contexts")
+        .and_then(|v| v.as_array())
+    {
         if !contexts.is_empty() {
             let mut status_jobs = Vec::new();
 
@@ -492,11 +499,14 @@ fn parse_checks_response(response: &serde_json::Value) -> Result<Vec<WorkflowRun
             if !status_jobs.is_empty() {
                 // Determine overall status from jobs
                 let has_pending = status_jobs.iter().any(|j| {
-                    matches!(j.status, WorkflowStatus::Pending | WorkflowStatus::InProgress)
+                    matches!(
+                        j.status,
+                        WorkflowStatus::Pending | WorkflowStatus::InProgress
+                    )
                 });
-                let has_failure = status_jobs.iter().any(|j| {
-                    matches!(j.conclusion, Some(WorkflowConclusion::Failure))
-                });
+                let has_failure = status_jobs
+                    .iter()
+                    .any(|j| matches!(j.conclusion, Some(WorkflowConclusion::Failure)));
 
                 let (overall_status, overall_conclusion) = if has_pending {
                     (WorkflowStatus::InProgress, None)
@@ -567,7 +577,8 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
         return Ok(JobLogs {
             job_id,
             job_name: job_name.to_string(),
-            content: "No logs available for this check.\n\nPress 'o' to open it in your browser.".to_string(),
+            content: "No logs available for this check.\n\nPress 'o' to open it in your browser."
+                .to_string(),
         });
     }
 
@@ -787,7 +798,10 @@ pub async fn fetch_pr_preview(owner: &str, repo: &str, pr_number: u64) -> Result
             // Format review state for display (using nerdfont icons)
             let state_prefix = match review_state.as_str() {
                 "APPROVED" => format!("{} Approved", crate::icons::REVIEW_APPROVED),
-                "CHANGES_REQUESTED" => format!("{} Changes Requested", crate::icons::REVIEW_CHANGES_REQUESTED),
+                "CHANGES_REQUESTED" => format!(
+                    "{} Changes Requested",
+                    crate::icons::REVIEW_CHANGES_REQUESTED
+                ),
                 "COMMENTED" => format!("{} Review", crate::icons::REVIEW_COMMENTED),
                 "DISMISSED" => format!("{} Dismissed", crate::icons::REVIEW_DISMISSED),
                 _ => continue, // Skip unknown/pending states with no useful info

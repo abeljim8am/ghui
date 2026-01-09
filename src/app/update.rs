@@ -1,7 +1,9 @@
 use ratatui::widgets::TableState;
 use std::process::Command as ProcessCommand;
 
-use crate::data::{AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowJob, WorkflowStatus};
+use crate::data::{
+    AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowJob, WorkflowStatus,
+};
 use crate::icons;
 use crate::services::{delete_label_filter, filter_prs, load_label_filters, save_label_filter};
 use crate::utils::checkout_branch;
@@ -267,11 +269,19 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
 
         // Clear clipboard feedback after timeout
         Message::Tick => {
-            if app.loading_my_prs || app.loading_review_prs || app.loading_labels_prs || app.actions_loading || app.job_logs_loading || app.preview_loading {
+            if app.loading_my_prs
+                || app.loading_review_prs
+                || app.loading_labels_prs
+                || app.actions_loading
+                || app.job_logs_loading
+                || app.preview_loading
+            {
                 app.update_spinner();
             }
             // Clear clipboard feedback after 2 seconds
-            if app.clipboard_feedback.is_some() && app.clipboard_feedback_time.elapsed() >= std::time::Duration::from_secs(2) {
+            if app.clipboard_feedback.is_some()
+                && app.clipboard_feedback_time.elapsed() >= std::time::Duration::from_secs(2)
+            {
                 app.clipboard_feedback = None;
             }
             None
@@ -736,7 +746,9 @@ fn open_actions_in_browser(app: &App) {
 
 fn get_selected_job(app: &App) -> Option<(String, String, WorkflowJob)> {
     // Get the selected job's full data (owner, repo, job)
-    let (owner, repo) = app.selected_pr().map(|pr| (pr.repo_owner.clone(), pr.repo_name.clone()))?;
+    let (owner, repo) = app
+        .selected_pr()
+        .map(|pr| (pr.repo_owner.clone(), pr.repo_name.clone()))?;
 
     if let Some(ref data) = app.actions_data {
         let mut current_idx = 0;
@@ -753,7 +765,11 @@ fn get_selected_job(app: &App) -> Option<(String, String, WorkflowJob)> {
 }
 
 /// Format annotations into readable text content
-fn format_annotations(annotations: &[CheckAnnotation], summary: Option<&str>, text: Option<&str>) -> String {
+fn format_annotations(
+    annotations: &[CheckAnnotation],
+    summary: Option<&str>,
+    text: Option<&str>,
+) -> String {
     let mut content = String::new();
 
     // Add summary if present
@@ -791,7 +807,12 @@ fn format_annotations(annotations: &[CheckAnnotation], summary: Option<&str>, te
             };
 
             content.push_str(&format!("{}\n", level_str));
-            content.push_str(&format!("  {} {}{}\n", icons::EMOJI_FILE, ann.path, line_range));
+            content.push_str(&format!(
+                "  {} {}{}\n",
+                icons::EMOJI_FILE,
+                ann.path,
+                line_range
+            ));
             if let Some(ref title) = ann.title {
                 content.push_str(&format!("  {} {}\n", icons::EMOJI_PIN, title));
             }
@@ -828,7 +849,9 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
 
         // Check if this looks like a reviewdog report with no findings
         // Reviewdog summaries contain "Findings (0)" when there are no issues
-        let is_empty_reviewdog = job.summary.as_ref()
+        let is_empty_reviewdog = job
+            .summary
+            .as_ref()
             .map(|s| s.contains("reviewdog") && s.contains("Findings (0)"))
             .unwrap_or(false);
 
@@ -839,7 +862,10 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
             app.job_logs = Some(JobLogs {
                 job_id: job.id,
                 job_name: job.name.clone(),
-                content: format!("{} No issues found.\n\nPress 'o' to view details in browser.", icons::STATUS_SUCCESS),
+                content: format!(
+                    "{} No issues found.\n\nPress 'o' to view details in browser.",
+                    icons::STATUS_SUCCESS
+                ),
             });
             app.job_logs_loading = false;
             return None;
@@ -853,11 +879,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
             // Use raw text view for summary/text without annotations
             app.annotations_view = false;
             app.annotations.clear();
-            let content = format_annotations(
-                &[],
-                job.summary.as_deref(),
-                job.text.as_deref(),
-            );
+            let content = format_annotations(&[], job.summary.as_deref(), job.text.as_deref());
             app.job_logs = Some(JobLogs {
                 job_id: job.id,
                 job_name: job.name.clone(),

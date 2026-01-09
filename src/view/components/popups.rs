@@ -423,7 +423,8 @@ pub fn render_workflows_view(f: &mut Frame, app: &App) {
             let mut job_index = 0;
             for run in &data.workflow_runs {
                 // Workflow header
-                let (status_icon, status_color) = get_workflow_status_display(run.status, run.conclusion);
+                let (status_icon, status_color) =
+                    get_workflow_status_display(run.status, run.conclusion);
 
                 content_lines.push(Line::from(vec![
                     Span::styled(status_icon, Style::default().fg(status_color)),
@@ -437,9 +438,14 @@ pub fn render_workflows_view(f: &mut Frame, app: &App) {
                     if is_selected {
                         selected_line_index = content_lines.len();
                     }
-                    let prefix = if is_selected { icons::SELECTOR_INDENTED } else { "    " };
+                    let prefix = if is_selected {
+                        icons::SELECTOR_INDENTED
+                    } else {
+                        "    "
+                    };
 
-                    let (job_icon, job_color) = get_workflow_status_display(job.status, job.conclusion);
+                    let (job_icon, job_color) =
+                        get_workflow_status_display(job.status, job.conclusion);
 
                     let style = if is_selected {
                         Style::default().fg(Color::Cyan).bold()
@@ -520,9 +526,10 @@ fn render_annotations_view(f: &mut Frame, app: &App) {
 
     // Render footer with annotation-specific hints
     let footer_line = if let Some(ref feedback) = app.clipboard_feedback {
-        Line::from(vec![
-            Span::styled(format!("{} {}", icons::STATUS_SUCCESS, feedback), Style::default().fg(Color::Green)),
-        ])
+        Line::from(vec![Span::styled(
+            format!("{} {}", icons::STATUS_SUCCESS, feedback),
+            Style::default().fg(Color::Green),
+        )])
     } else {
         let selected_count = app.selected_annotations.len();
         let copy_hint = if selected_count > 0 {
@@ -591,7 +598,14 @@ fn render_annotations_view(f: &mut Frame, app: &App) {
 
         // Main line: [prefix][icon] file:line
         lines.push(Line::from(vec![
-            Span::styled(prefix, if is_marked { Style::default().fg(Color::Green) } else { Style::default() }),
+            Span::styled(
+                prefix,
+                if is_marked {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default()
+                },
+            ),
             Span::styled(level_icon, Style::default().fg(level_color)),
             Span::styled(line_info, highlight_style),
         ]));
@@ -680,9 +694,10 @@ fn render_raw_logs_view(f: &mut Frame, app: &App) {
 
     // Render footer
     let footer_line = if let Some(ref feedback) = app.clipboard_feedback {
-        Line::from(vec![
-            Span::styled(format!("{} {}", icons::STATUS_SUCCESS, feedback), Style::default().fg(Color::Green)),
-        ])
+        Line::from(vec![Span::styled(
+            format!("{} {}", icons::STATUS_SUCCESS, feedback),
+            Style::default().fg(Color::Green),
+        )])
     } else {
         Line::from(vec![
             Span::styled("j/k", Style::default().fg(Color::Yellow)),
@@ -734,7 +749,9 @@ fn get_workflow_status_display(
             Some(WorkflowConclusion::Cancelled) => (icons::STATUS_CANCELLED, Color::Yellow),
             Some(WorkflowConclusion::Skipped) => (icons::STATUS_SKIPPED, Color::DarkGray),
             Some(WorkflowConclusion::TimedOut) => (icons::STATUS_TIMED_OUT, Color::Red),
-            Some(WorkflowConclusion::ActionRequired) => (icons::STATUS_ACTION_REQUIRED, Color::Yellow),
+            Some(WorkflowConclusion::ActionRequired) => {
+                (icons::STATUS_ACTION_REQUIRED, Color::Yellow)
+            }
             _ => (icons::STATUS_UNKNOWN, Color::DarkGray),
         },
         WorkflowStatus::InProgress => (icons::STATUS_IN_PROGRESS, Color::Yellow),
@@ -1095,10 +1112,7 @@ fn markdown_to_lines(markdown: &str, _max_width: usize) -> Vec<Line<'static>> {
                 TagEnd::Image => {
                     // Output the image as raw markdown text
                     let raw_md = format!("![{}]({})", image_alt, image_url);
-                    current_spans.push(Span::styled(
-                        raw_md,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    current_spans.push(Span::styled(raw_md, Style::default().fg(Color::DarkGray)));
                     in_image = false;
                     image_alt.clear();
                     image_url.clear();
@@ -1193,11 +1207,7 @@ fn flush_text(
 }
 
 /// Flush accumulated text for headings with color
-fn flush_heading_text(
-    text: &mut String,
-    spans: &mut Vec<Span<'static>>,
-    color: Option<Color>,
-) {
+fn flush_heading_text(text: &mut String, spans: &mut Vec<Span<'static>>, color: Option<Color>) {
     if text.is_empty() {
         return;
     }
@@ -1213,7 +1223,10 @@ fn flush_heading_text(
 
 /// Calculate the line positions of each comment in the preview view
 /// Returns (comment_positions, total_lines)
-pub fn calculate_preview_positions(comments: &[crate::data::PrComment], width: usize) -> (Vec<u16>, u16) {
+pub fn calculate_preview_positions(
+    comments: &[crate::data::PrComment],
+    width: usize,
+) -> (Vec<u16>, u16) {
     let mut positions: Vec<u16> = Vec::new();
     let mut current_line: u16 = 0;
 

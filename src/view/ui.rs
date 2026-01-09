@@ -9,9 +9,9 @@ use crate::app::App;
 use crate::icons;
 
 use super::components::{
-    render_add_label_popup, render_checkout_popup, render_error_popup,
-    render_help_popup, render_job_logs_view, render_labels_popup, render_legend,
-    render_preview_view, render_search_bar, render_table, render_tabs, render_workflows_view,
+    render_add_label_popup, render_checkout_popup, render_error_popup, render_help_popup,
+    render_job_logs_view, render_labels_popup, render_legend, render_preview_view,
+    render_search_bar, render_table, render_tabs, render_workflows_view,
 };
 
 /// Main UI rendering function

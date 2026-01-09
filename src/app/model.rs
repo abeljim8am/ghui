@@ -4,8 +4,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::data::{ActionsData, CheckAnnotation, JobLogs, LabelFilter, PrFilter, PreviewData, PullRequest, SPINNER_FRAMES};
-use crate::services::{fetch_actions_for_pr, fetch_job_logs, fetch_pr_preview, fetch_prs_graphql, load_cache, load_label_filters, save_cache};
+use crate::data::{
+    ActionsData, CheckAnnotation, JobLogs, LabelFilter, PrFilter, PreviewData, PullRequest,
+    SPINNER_FRAMES,
+};
+use crate::services::{
+    fetch_actions_for_pr, fetch_job_logs, fetch_pr_preview, fetch_prs_graphql, load_cache,
+    load_label_filters, save_cache,
+};
 use crate::utils::get_current_repo;
 
 use super::message::FetchResult;
@@ -58,10 +64,10 @@ pub struct App {
     pub job_logs_scroll: u16,
 
     // Annotations view state (for reviewdog, etc.)
-    pub annotations_view: bool,           // true if viewing annotations, false for raw logs
+    pub annotations_view: bool, // true if viewing annotations, false for raw logs
     pub annotations: Vec<CheckAnnotation>, // current annotations being displayed
     pub selected_annotation_index: usize,
-    pub selected_annotations: Vec<usize>,  // indices of selected annotations for copying
+    pub selected_annotations: Vec<usize>, // indices of selected annotations for copying
 
     // Preview view state
     pub show_preview_view: bool,
@@ -429,11 +435,9 @@ impl App {
         self.preview_loading = true;
         self.preview_data = None;
         self.preview_scroll = 0;
-        let _ = self.preview_tx.send((
-            owner.to_string(),
-            repo.to_string(),
-            pr_number,
-        ));
+        let _ = self
+            .preview_tx
+            .send((owner.to_string(), repo.to_string(), pr_number));
     }
 
     pub fn check_preview_result(&mut self) -> Option<FetchResult> {
