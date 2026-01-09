@@ -34,6 +34,31 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
     let token = get_github_token()?;
     let octocrab = Octocrab::builder().personal_token(token).build()?;
 
+    // For Labels filter with multiple labels, we need to fetch each label separately
+    // and combine results (GitHub Search doesn't support OR with label: qualifier)
+    if let PrFilter::Labels(labels) = &filter {
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch PRs for each label separately
+        let mut all_prs = Vec::new();
+        for label in labels {
+            let query_string = format!(
+                "repo:{}/{} is:pr is:open label:\"{}\"",
+                owner, repo, label
+            );
+            let prs = fetch_prs_for_query(&octocrab, query_string, &owner, &repo).await?;
+            all_prs.extend(prs);
+        }
+
+        // Deduplicate by PR number
+        all_prs.sort_by_key(|pr| pr.number);
+        all_prs.dedup_by_key(|pr| pr.number);
+
+        return Ok(all_prs);
+    }
+
     // Use search instead of repository.pullRequests + client-side filtering.
     // This avoids missing older PRs when a repo has many open PRs.
     let query_string = match &filter {
@@ -51,20 +76,19 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
                 owner, repo, current_user
             )
         }
-        PrFilter::Labels(labels) => {
-            if labels.is_empty() {
-                return Ok(Vec::new());
-            }
-            // Build query with labels: repo:owner/repo is:pr is:open label:label1 label:label2
-            let label_query: String = labels
-                .iter()
-                .map(|l| format!("label:\"{}\"", l))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("repo:{}/{} is:pr is:open {}", owner, repo, label_query)
-        }
+        PrFilter::Labels(_) => unreachable!(), // Handled above
     };
 
+    fetch_prs_for_query(&octocrab, query_string, &owner, &repo).await
+}
+
+/// Helper function to fetch PRs for a given search query
+async fn fetch_prs_for_query(
+    octocrab: &Octocrab,
+    query_string: String,
+    owner: &str,
+    repo: &str,
+) -> Result<Vec<PullRequest>> {
     let query = r#"
         query($queryString: String!, $after: String) {
             search(query: $queryString, type: ISSUE, first: 100, after: $after) {
@@ -143,8 +167,8 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
                 number,
                 title,
                 branch: head_ref_name,
-                repo_owner: owner.clone(),
-                repo_name: repo.clone(),
+                repo_owner: owner.to_string(),
+                repo_name: repo.to_string(),
                 ci_status,
                 author: author_login,
                 head_sha,
