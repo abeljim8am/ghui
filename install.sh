@@ -60,7 +60,7 @@ detect_platform() {
                     printf "linux-x64"
                     ;;
                 aarch64|arm64)
-                    error "Linux ARM64 is not currently supported. Only x86_64 is available."
+                    printf "linux-arm64"
                     ;;
                 *)
                     error "Unsupported Linux architecture: $arch"
