@@ -778,7 +778,9 @@ pub fn render_toast(f: &mut Frame, app: &App) {
     // URL popup - centered modal that requires manual dismiss
     if let Some(ref url) = app.show_url_popup {
         let area = f.area();
-        let popup_width = (url.len() as u16 + 6).min(area.width.saturating_sub(4)).max(30);
+        let popup_width = (url.len() as u16 + 6)
+            .min(area.width.saturating_sub(4))
+            .max(30);
         let popup_height = 5;
         let popup_area = centered_rect(popup_width, popup_height, area);
 
@@ -788,7 +790,9 @@ pub fn render_toast(f: &mut Frame, app: &App) {
             Line::from(""),
             Line::from(url.as_str()).centered(),
             Line::from(""),
-            Line::from("Press Enter or q to close").centered().style(Style::default().fg(Color::DarkGray)),
+            Line::from("Press Enter or q to close")
+                .centered()
+                .style(Style::default().fg(Color::DarkGray)),
         ];
 
         let popup = Paragraph::new(lines).block(
