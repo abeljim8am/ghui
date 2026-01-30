@@ -62,8 +62,10 @@ pub struct App {
     pub job_logs: Option<JobLogs>,
     pub job_logs_loading: bool,
     pub job_logs_scroll: u16,
-    pub job_logs_selected_step: usize,      // Currently selected step
-    pub job_logs_expanded_steps: Vec<bool>, // Which steps are expanded
+    pub job_logs_selected_step: usize,                // Currently selected top-level step/container
+    pub job_logs_expanded_steps: Vec<bool>,           // Which top-level steps are expanded
+    pub job_logs_selected_sub_step: Option<usize>,    // Currently selected sub-step within a container (None = container itself selected)
+    pub job_logs_expanded_sub_steps: Vec<Vec<bool>>,  // Which sub-steps are expanded per container
 
     // Annotations view state (for reviewdog, etc.)
     pub annotations_view: bool, // true if viewing annotations, false for raw logs
@@ -299,6 +301,8 @@ impl App {
             job_logs_scroll: 0,
             job_logs_selected_step: 0,
             job_logs_expanded_steps: Vec::new(),
+            job_logs_selected_sub_step: None,
+            job_logs_expanded_sub_steps: Vec::new(),
             annotations_view: false,
             annotations: Vec::new(),
             selected_annotation_index: 0,

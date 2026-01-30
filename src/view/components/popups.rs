@@ -730,6 +730,8 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" expand  "),
             Span::styled("y", Style::default().fg(Color::Yellow)),
+            Span::raw(" smart copy  "),
+            Span::styled("x", Style::default().fg(Color::Yellow)),
             Span::raw(" copy  "),
             Span::styled("o", Style::default().fg(Color::Yellow)),
             Span::raw(" open  "),
@@ -740,7 +742,7 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
     let footer = Paragraph::new(vec![Line::raw(""), footer_line]);
     f.render_widget(footer, footer_area);
 
-    // Render steps
+    // Render steps (with support for nested sub-steps)
     if let Some(ref logs) = app.job_logs {
         if let Some(ref steps) = logs.steps {
             let mut lines: Vec<Line> = Vec::new();
@@ -748,24 +750,29 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
             let content_width = content_area.width as usize;
 
             for (idx, step) in steps.iter().enumerate() {
-                let is_selected = idx == app.job_logs_selected_step;
+                let is_container_selected = idx == app.job_logs_selected_step && app.job_logs_selected_sub_step.is_none();
                 let is_expanded = app
                     .job_logs_expanded_steps
                     .get(idx)
                     .copied()
                     .unwrap_or(false);
+                let has_sub_steps = step.sub_steps.is_some();
 
-                if is_selected {
+                if is_container_selected {
                     selected_line_idx = lines.len();
                 }
 
-                // Step header
-                let prefix = if is_selected {
+                // Step/Container header
+                let prefix = if is_container_selected {
                     icons::SELECTOR
                 } else {
                     "  "
                 };
-                let fold_icon = if is_expanded { "▼" } else { "▶" };
+                let fold_icon = if has_sub_steps || !step.output.is_empty() {
+                    if is_expanded { "▼" } else { "▶" }
+                } else {
+                    " "
+                };
                 let status_icon = if step.is_failed {
                     icons::STATUS_FAILURE
                 } else {
@@ -777,7 +784,7 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
                     Color::Green
                 };
 
-                let header_style = if is_selected {
+                let header_style = if is_container_selected {
                     Style::default().fg(Color::Cyan).bold()
                 } else {
                     Style::default().fg(Color::White)
@@ -796,34 +803,116 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
                     ),
                 ]));
 
-                // Show output if expanded
+                // Show content if expanded
                 if is_expanded {
-                    // Wrap and indent the output
-                    let indent = "     ";
-                    let max_width = content_width.saturating_sub(indent.len() + 2);
+                    if let Some(ref sub_steps) = step.sub_steps {
+                        // Render nested sub-steps
+                        for (sub_idx, sub_step) in sub_steps.iter().enumerate() {
+                            let is_sub_selected = idx == app.job_logs_selected_step
+                                && app.job_logs_selected_sub_step == Some(sub_idx);
+                            let is_sub_expanded = app
+                                .job_logs_expanded_sub_steps
+                                .get(idx)
+                                .and_then(|v| v.get(sub_idx))
+                                .copied()
+                                .unwrap_or(false);
 
-                    let line_style = if step.is_failed {
-                        Style::default().fg(Color::White)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    };
+                            if is_sub_selected {
+                                selected_line_idx = lines.len();
+                            }
 
-                    for line in step.output.lines() {
-                        if line.is_empty() {
-                            lines.push(Line::raw(""));
-                            continue;
-                        }
+                            // Sub-step header (indented)
+                            let sub_prefix = if is_sub_selected {
+                                format!("  {}", icons::SELECTOR)
+                            } else {
+                                "    ".to_string()
+                            };
+                            let sub_fold_icon = if is_sub_expanded { "▼" } else { "▶" };
+                            let sub_status_icon = if sub_step.is_failed {
+                                icons::STATUS_FAILURE
+                            } else {
+                                icons::STATUS_SUCCESS
+                            };
+                            let sub_status_color = if sub_step.is_failed {
+                                Color::Red
+                            } else {
+                                Color::Green
+                            };
 
-                        // Wrap long lines properly
-                        let wrapped = wrap_text(line, max_width);
-                        for wrapped_line in wrapped {
+                            let sub_header_style = if is_sub_selected {
+                                Style::default().fg(Color::Cyan).bold()
+                            } else {
+                                Style::default().fg(Color::White)
+                            };
+
                             lines.push(Line::from(vec![
-                                Span::raw(indent),
-                                Span::styled(wrapped_line, line_style),
+                                Span::raw(sub_prefix),
+                                Span::styled(sub_fold_icon, Style::default().fg(Color::DarkGray)),
+                                Span::raw(" "),
+                                Span::styled(sub_status_icon, Style::default().fg(sub_status_color)),
+                                Span::raw(" "),
+                                Span::styled(&sub_step.name, sub_header_style),
+                                Span::styled(
+                                    format!(" [{}]", sub_step.status),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
                             ]));
+
+                            // Show sub-step output if expanded
+                            if is_sub_expanded && !sub_step.output.is_empty() {
+                                let indent = "        ";
+                                let max_width = content_width.saturating_sub(indent.len() + 2);
+
+                                let line_style = if sub_step.is_failed {
+                                    Style::default().fg(Color::White)
+                                } else {
+                                    Style::default().fg(Color::DarkGray)
+                                };
+
+                                for line in sub_step.output.lines() {
+                                    if line.is_empty() {
+                                        lines.push(Line::raw(""));
+                                        continue;
+                                    }
+
+                                    let wrapped = wrap_text(line, max_width);
+                                    for wrapped_line in wrapped {
+                                        lines.push(Line::from(vec![
+                                            Span::raw(indent),
+                                            Span::styled(wrapped_line, line_style),
+                                        ]));
+                                    }
+                                }
+                                lines.push(Line::raw("")); // Blank line after expanded sub-step
+                            }
                         }
+                    } else if !step.output.is_empty() {
+                        // No sub-steps, show regular output (original behavior)
+                        let indent = "     ";
+                        let max_width = content_width.saturating_sub(indent.len() + 2);
+
+                        let line_style = if step.is_failed {
+                            Style::default().fg(Color::White)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+
+                        for line in step.output.lines() {
+                            if line.is_empty() {
+                                lines.push(Line::raw(""));
+                                continue;
+                            }
+
+                            let wrapped = wrap_text(line, max_width);
+                            for wrapped_line in wrapped {
+                                lines.push(Line::from(vec![
+                                    Span::raw(indent),
+                                    Span::styled(wrapped_line, line_style),
+                                ]));
+                            }
+                        }
+                        lines.push(Line::raw("")); // Blank line after expanded step
                     }
-                    lines.push(Line::raw("")); // Blank line after expanded step
                 }
             }
 

@@ -292,12 +292,15 @@ pub struct JobLogs {
 }
 
 /// A step within a job (for CircleCI foldable logs)
+/// For parallel jobs, top-level steps represent containers, with sub_steps containing the actual steps
 #[derive(Debug, Clone)]
 pub struct JobStep {
     pub name: String,
     pub status: String,
     pub output: String,
     pub is_failed: bool,
+    /// Nested steps (used for containers in parallel jobs)
+    pub sub_steps: Option<Vec<JobStep>>,
 }
 
 /// A workflow run (e.g., "CI", "Tests")

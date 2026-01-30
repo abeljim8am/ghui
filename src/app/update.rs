@@ -1,4 +1,6 @@
 use ratatui::widgets::TableState;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::process::Command as ProcessCommand;
 
 use crate::data::{
@@ -14,6 +16,21 @@ use crate::view::calculate_preview_positions;
 
 use super::message::{Command, FetchResult, Message};
 use super::model::App;
+
+/// Debug logging to /tmp/ghui_circleci_debug.log
+fn debug_log(msg: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/ghui_circleci_debug.log")
+    {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{}] {}", timestamp, msg);
+    }
+}
 
 /// Update the application state based on a message.
 /// Returns an optional command to be executed by the main loop.
@@ -213,6 +230,14 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
         }
         Message::JobLogsToggleStep => {
             job_logs_toggle_step(app);
+            None
+        }
+        Message::SmartCopyStepOutput => {
+            smart_copy_step_output(app);
+            None
+        }
+        Message::FullCopyStepOutput => {
+            full_copy_step_output(app);
             None
         }
 
@@ -929,21 +954,40 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
         app.job_logs_loading = true;
         app.job_logs = None;
 
+        debug_log("========================================");
+        debug_log(&format!(
+            "open_job_logs: job.name={}, job.id={}, details_url={:?}",
+            job.name, job.id, job.details_url
+        ));
+
         // Check if this is a CircleCI job and we have CircleCI configured
         if let Some(ref details_url) = job.details_url {
+            debug_log(&format!("  Checking if CircleCI URL: {}", details_url));
+            debug_log(&format!("  is_circleci_url={}, is_circleci_configured={}",
+                is_circleci_url(details_url), is_circleci_configured()));
+
             if is_circleci_url(details_url) && is_circleci_configured() {
-                if let Some(job_number) = extract_job_number_from_url(details_url) {
+                let job_number = extract_job_number_from_url(details_url);
+                debug_log(&format!("  Extracted job_number: {:?}", job_number));
+
+                if let Some(job_number) = job_number {
+                    debug_log(&format!("  -> Using CircleCI fetch for job_number={}", job_number));
                     return Some(Command::StartCircleCIJobLogsFetch(
                         owner,
                         repo,
                         job_number,
                         job.name,
                     ));
+                } else {
+                    debug_log("  -> No job_number extracted, falling back to GitHub CLI");
                 }
             }
+        } else {
+            debug_log("  No details_url, falling back to GitHub CLI");
         }
 
         // Fall back to GitHub logs via gh CLI
+        debug_log(&format!("  -> Using GitHub CLI fetch for job.id={}", job.id));
         return Some(Command::StartJobLogsFetch(owner, repo, job.id, job.name));
     }
     None
@@ -956,6 +1000,8 @@ fn close_job_logs(app: &mut App) {
     app.job_logs_scroll = 0;
     app.job_logs_selected_step = 0;
     app.job_logs_expanded_steps.clear();
+    app.job_logs_selected_sub_step = None;
+    app.job_logs_expanded_sub_steps.clear();
     app.annotations_view = false;
     app.annotations.clear();
     app.selected_annotation_index = 0;
@@ -967,24 +1013,42 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
         FetchResult::JobLogsSuccess(logs) => {
             // Initialize step state for foldable steps
             if let Some(ref steps) = logs.steps {
-                // Default: expand failed steps and last step
+                // Default expansion state:
+                // - Expand failed containers/steps only
+                // - Keep successful ones closed
                 let expanded: Vec<bool> = steps
                     .iter()
-                    .enumerate()
-                    .map(|(i, step)| step.is_failed || i == steps.len() - 1)
+                    .map(|step| step.is_failed)
                     .collect();
 
-                // Select the first failed step, or the last step if none failed
+                // Initialize sub-step expansion state - all closed by default
+                let expanded_sub_steps: Vec<Vec<bool>> = steps
+                    .iter()
+                    .map(|step| {
+                        if let Some(ref sub_steps) = step.sub_steps {
+                            // All sub-steps closed by default
+                            vec![false; sub_steps.len()]
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect();
+
+                // Select the first failed container, or the first container if none failed
                 let selected = steps
                     .iter()
                     .position(|s| s.is_failed)
-                    .unwrap_or(steps.len().saturating_sub(1));
+                    .unwrap_or(0);
 
                 app.job_logs_expanded_steps = expanded;
+                app.job_logs_expanded_sub_steps = expanded_sub_steps;
                 app.job_logs_selected_step = selected;
+                app.job_logs_selected_sub_step = None; // Start at container level
             } else {
                 app.job_logs_expanded_steps.clear();
+                app.job_logs_expanded_sub_steps.clear();
                 app.job_logs_selected_step = 0;
+                app.job_logs_selected_sub_step = None;
             }
             app.job_logs = Some(logs);
             app.job_logs_loading = false;
@@ -1002,23 +1066,113 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
 fn job_logs_next_step(app: &mut App) {
     if let Some(ref logs) = app.job_logs {
         if let Some(ref steps) = logs.steps {
-            if app.job_logs_selected_step < steps.len().saturating_sub(1) {
-                app.job_logs_selected_step += 1;
+            let current_step = app.job_logs_selected_step;
+            let current_sub = app.job_logs_selected_sub_step;
+            let is_expanded = app.job_logs_expanded_steps.get(current_step).copied().unwrap_or(false);
+
+            // Check if current step has sub-steps
+            let has_sub_steps = steps
+                .get(current_step)
+                .and_then(|s| s.sub_steps.as_ref())
+                .map(|ss| !ss.is_empty())
+                .unwrap_or(false);
+
+            let sub_steps_len = steps
+                .get(current_step)
+                .and_then(|s| s.sub_steps.as_ref())
+                .map(|ss| ss.len())
+                .unwrap_or(0);
+
+            if has_sub_steps && is_expanded {
+                // We're in a container with sub-steps that is expanded
+                match current_sub {
+                    None => {
+                        // Currently on container, move to first sub-step
+                        app.job_logs_selected_sub_step = Some(0);
+                    }
+                    Some(sub_idx) if sub_idx < sub_steps_len.saturating_sub(1) => {
+                        // Move to next sub-step
+                        app.job_logs_selected_sub_step = Some(sub_idx + 1);
+                    }
+                    Some(_) => {
+                        // At last sub-step, move to next container
+                        if current_step < steps.len().saturating_sub(1) {
+                            app.job_logs_selected_step = current_step + 1;
+                            app.job_logs_selected_sub_step = None;
+                        }
+                    }
+                }
+            } else {
+                // Regular step or collapsed container, move to next step
+                if current_step < steps.len().saturating_sub(1) {
+                    app.job_logs_selected_step = current_step + 1;
+                    app.job_logs_selected_sub_step = None;
+                }
             }
         }
     }
 }
 
 fn job_logs_prev_step(app: &mut App) {
-    if app.job_logs_selected_step > 0 {
-        app.job_logs_selected_step -= 1;
+    if let Some(ref logs) = app.job_logs {
+        if let Some(ref steps) = logs.steps {
+            let current_step = app.job_logs_selected_step;
+            let current_sub = app.job_logs_selected_sub_step;
+
+            match current_sub {
+                Some(sub_idx) if sub_idx > 0 => {
+                    // Move to previous sub-step
+                    app.job_logs_selected_sub_step = Some(sub_idx - 1);
+                }
+                Some(_) => {
+                    // At first sub-step, move to container
+                    app.job_logs_selected_sub_step = None;
+                }
+                None if current_step > 0 => {
+                    // At container level, move to previous container
+                    let prev_step = current_step - 1;
+                    let prev_is_expanded = app.job_logs_expanded_steps.get(prev_step).copied().unwrap_or(false);
+                    let prev_sub_steps_len = steps
+                        .get(prev_step)
+                        .and_then(|s| s.sub_steps.as_ref())
+                        .map(|ss| ss.len())
+                        .unwrap_or(0);
+
+                    app.job_logs_selected_step = prev_step;
+
+                    // If previous container is expanded and has sub-steps, select last sub-step
+                    if prev_is_expanded && prev_sub_steps_len > 0 {
+                        app.job_logs_selected_sub_step = Some(prev_sub_steps_len - 1);
+                    } else {
+                        app.job_logs_selected_sub_step = None;
+                    }
+                }
+                None => {
+                    // At first container, do nothing
+                }
+            }
+        }
     }
 }
 
 fn job_logs_toggle_step(app: &mut App) {
-    let idx = app.job_logs_selected_step;
-    if idx < app.job_logs_expanded_steps.len() {
-        app.job_logs_expanded_steps[idx] = !app.job_logs_expanded_steps[idx];
+    let step_idx = app.job_logs_selected_step;
+
+    match app.job_logs_selected_sub_step {
+        Some(sub_idx) => {
+            // Toggle sub-step expansion
+            if let Some(sub_expanded) = app.job_logs_expanded_sub_steps.get_mut(step_idx) {
+                if let Some(expanded) = sub_expanded.get_mut(sub_idx) {
+                    *expanded = !*expanded;
+                }
+            }
+        }
+        None => {
+            // Toggle container/step expansion
+            if let Some(expanded) = app.job_logs_expanded_steps.get_mut(step_idx) {
+                *expanded = !*expanded;
+            }
+        }
     }
 }
 
@@ -1028,6 +1182,163 @@ fn copy_job_logs_to_clipboard(app: &mut App) {
             app.clipboard_feedback = Some("Copied to clipboard!".to_string());
             app.clipboard_feedback_time = std::time::Instant::now();
         }
+    }
+}
+
+/// Get the currently selected step's output
+fn get_selected_step_output(app: &App) -> Option<String> {
+    let logs = app.job_logs.as_ref()?;
+    let steps = logs.steps.as_ref()?;
+    let step = steps.get(app.job_logs_selected_step)?;
+
+    match app.job_logs_selected_sub_step {
+        Some(sub_idx) => {
+            // Get sub-step output
+            step.sub_steps.as_ref()?.get(sub_idx).map(|s| s.output.clone())
+        }
+        None => {
+            // Get container/step output
+            if step.sub_steps.is_some() {
+                // Container selected - combine all sub-step outputs
+                let sub_steps = step.sub_steps.as_ref()?;
+                let combined: String = sub_steps
+                    .iter()
+                    .filter(|s| !s.output.is_empty() && s.output != "(No output)")
+                    .map(|s| format!("=== {} ===\n{}", s.name, s.output))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                Some(combined)
+            } else {
+                Some(step.output.clone())
+            }
+        }
+    }
+}
+
+/// Extract test failures/errors from Rails/minitest output
+fn extract_test_failures(output: &str) -> Option<String> {
+    let mut result = Vec::new();
+    let mut in_failure = false;
+    let mut current_failure = Vec::new();
+    let mut summary_line: Option<String> = None;
+    let mut exit_line: Option<String> = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        // Detect start of a failure/error block (e.g., "  1) Error:", "  2) Failure:")
+        if (trimmed.starts_with("1)") || trimmed.starts_with("2)") || trimmed.starts_with("3)")
+            || trimmed.starts_with("4)") || trimmed.starts_with("5)") || trimmed.starts_with("6)")
+            || trimmed.starts_with("7)") || trimmed.starts_with("8)") || trimmed.starts_with("9)"))
+            && (trimmed.contains("Error:") || trimmed.contains("Failure:"))
+        {
+            // Save previous failure if any
+            if !current_failure.is_empty() {
+                result.push(current_failure.join("\n"));
+                current_failure.clear();
+            }
+            in_failure = true;
+            current_failure.push(line.to_string());
+        } else if in_failure {
+            // Check if we've reached the end of the failure block
+            // Empty line followed by another failure, or summary line
+            if trimmed.is_empty() && current_failure.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                // Two consecutive empty lines - end of block
+                result.push(current_failure.join("\n"));
+                current_failure.clear();
+                in_failure = false;
+            } else if trimmed.contains(" runs, ") && trimmed.contains(" assertions, ") {
+                // Summary line reached - end of failures
+                result.push(current_failure.join("\n"));
+                current_failure.clear();
+                in_failure = false;
+                summary_line = Some(line.to_string());
+            } else {
+                current_failure.push(line.to_string());
+            }
+        }
+
+        // Capture summary line (e.g., "4869 runs, 18453 assertions, 1 failures, 2 errors, 0 skips")
+        if trimmed.contains(" runs, ") && trimmed.contains(" assertions, ") && trimmed.contains(" failures, ") {
+            summary_line = Some(trimmed.to_string());
+        }
+
+        // Capture exit status line
+        if trimmed.to_lowercase().contains("exit") && (trimmed.contains("status") || trimmed.contains("code")) {
+            exit_line = Some(trimmed.to_string());
+        }
+    }
+
+    // Don't forget the last failure block
+    if !current_failure.is_empty() {
+        result.push(current_failure.join("\n"));
+    }
+
+    if result.is_empty() && summary_line.is_none() && exit_line.is_none() {
+        return None;
+    }
+
+    let mut output_parts = result;
+    if let Some(summary) = summary_line {
+        output_parts.push(format!("\n{}", summary));
+    }
+    if let Some(exit) = exit_line {
+        output_parts.push(exit);
+    }
+
+    Some(output_parts.join("\n\n"))
+}
+
+/// Smart copy: extract test failures/errors from the selected step
+fn smart_copy_step_output(app: &mut App) {
+    let output = match get_selected_step_output(app) {
+        Some(o) if !o.is_empty() && o != "(No output)" => o,
+        _ => {
+            app.clipboard_feedback = Some("No output to copy".to_string());
+            app.clipboard_feedback_time = std::time::Instant::now();
+            return;
+        }
+    };
+
+    // Try to extract test failures
+    if let Some(failures) = extract_test_failures(&output) {
+        if copy_to_clipboard(&failures) {
+            app.clipboard_feedback = Some("Copied to clipboard!".to_string());
+            app.clipboard_feedback_time = std::time::Instant::now();
+            return;
+        }
+    }
+
+    // Fallback: copy the full output
+    if copy_to_clipboard(&output) {
+        app.clipboard_feedback = Some("Fallback: copied full output".to_string());
+        app.clipboard_feedback_time = std::time::Instant::now();
+    }
+}
+
+/// Full copy: copy the entire selected step output
+fn full_copy_step_output(app: &mut App) {
+    let output = match get_selected_step_output(app) {
+        Some(o) if !o.is_empty() && o != "(No output)" => o,
+        _ => {
+            app.clipboard_feedback = Some("No output to copy".to_string());
+            app.clipboard_feedback_time = std::time::Instant::now();
+            return;
+        }
+    };
+
+    if copy_to_clipboard(&output) {
+        let size = output.len();
+        let msg = if size > 10000 {
+            format!("Copied {} KB", size / 1024)
+        } else {
+            "Copied full output".to_string()
+        };
+        app.clipboard_feedback = Some(msg);
+        app.clipboard_feedback_time = std::time::Instant::now();
+    } else {
+        app.clipboard_feedback = Some("Failed to copy - output too large?".to_string());
+        app.clipboard_feedback_time = std::time::Instant::now();
     }
 }
 

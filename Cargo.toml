@@ -15,6 +15,7 @@ sea-query-rusqlite = "0.7"
 dirs = "5.0"
 octocrab = "0.41"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+futures = "0.3"
 nucleo-matcher = "0.3"
 pulldown-cmark = "0.12"
 base64 = "0.22"

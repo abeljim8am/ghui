@@ -85,6 +85,8 @@ pub enum Message {
     JobLogsNextStep,
     JobLogsPrevStep,
     JobLogsToggleStep,
+    SmartCopyStepOutput, // y - extract test failures/errors
+    FullCopyStepOutput,  // x - copy full step output
 
     // Annotations view (reviewdog, etc.)
     AnnotationNext,

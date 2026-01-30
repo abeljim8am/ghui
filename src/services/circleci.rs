@@ -1,12 +1,30 @@
 use anyhow::Result;
+use futures::future::join_all;
 use serde::Deserialize;
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
 use strip_ansi_escapes::strip_str;
 
 use crate::data::{JobLogs, JobStep, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
 
 const CIRCLECI_API_V2_BASE: &str = "https://circleci.com/api/v2";
 const CIRCLECI_API_V1_BASE: &str = "https://circleci.com/api/v1.1";
+
+/// Debug logging to /tmp/ghui_circleci_debug.log
+fn debug_log(msg: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/ghui_circleci_debug.log")
+    {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{}] {}", timestamp, msg);
+    }
+}
 
 /// Get CircleCI API token from environment
 pub fn get_circleci_token() -> Option<String> {
@@ -258,6 +276,11 @@ async fn fetch_job_details_v2(owner: &str, repo: &str, job_number: u64) -> Resul
 
 /// Fetch job details including steps with output URLs (v1.1 API - has step output)
 async fn fetch_job_details_v1(owner: &str, repo: &str, job_number: u64) -> Result<V1JobDetails> {
+    debug_log(&format!(
+        "fetch_job_details_v1: owner={}, repo={}, job_number={}",
+        owner, repo, job_number
+    ));
+
     let token = get_circleci_token()
         .ok_or_else(|| anyhow::anyhow!("CIRCLECI_TOKEN environment variable not set"))?;
 
@@ -266,8 +289,28 @@ async fn fetch_job_details_v1(owner: &str, repo: &str, job_number: u64) -> Resul
         "{}/project/github/{}/{}/{}",
         CIRCLECI_API_V1_BASE, owner, repo, job_number
     );
+    debug_log(&format!("  API URL: {}", url));
 
     let response: V1JobDetails = client.get(&url).send().await?.json().await?;
+
+    debug_log(&format!(
+        "  Response: build_num={:?}, status={:?}, steps_count={}",
+        response.build_num,
+        response.status,
+        response.steps.as_ref().map(|s| s.len()).unwrap_or(0)
+    ));
+
+    // Log step names for debugging
+    if let Some(ref steps) = response.steps {
+        for (i, step) in steps.iter().enumerate() {
+            debug_log(&format!(
+                "    Step {}: name='{}', actions_count={}",
+                i,
+                step.name,
+                step.actions.len()
+            ));
+        }
+    }
 
     Ok(response)
 }
@@ -335,6 +378,12 @@ pub async fn fetch_circleci_job_logs(
     job_number: u64,
     job_name: &str,
 ) -> Result<JobLogs> {
+    debug_log("========================================");
+    debug_log(&format!(
+        "fetch_circleci_job_logs: owner={}, repo={}, job_number={}, job_name={}",
+        owner, repo, job_number, job_name
+    ));
+
     let token = get_circleci_token()
         .ok_or_else(|| anyhow::anyhow!("CIRCLECI_TOKEN environment variable not set"))?;
 
@@ -344,91 +393,177 @@ pub async fn fetch_circleci_job_logs(
     let mut structured_steps: Vec<JobStep> = Vec::new();
 
     if let Some(steps) = details.steps {
-        for step in steps {
-            // Get status and exit code from the first action
-            let first_action = step.actions.first();
-            let step_status = first_action
-                .and_then(|a| a.status.as_deref())
-                .unwrap_or("unknown")
-                .to_string();
-            let exit_code = first_action.and_then(|a| a.exit_code);
+        // Determine if this is a parallel job (multiple actions per step)
+        let num_containers = steps.first().map(|s| s.actions.len()).unwrap_or(1);
+        let is_parallel = num_containers > 1;
 
-            let is_failed = step_status.to_lowercase() == "failed"
-                || step_status.to_lowercase() == "timedout"
-                || exit_code.map(|c| c != 0).unwrap_or(false);
+        debug_log(&format!(
+            "Processing job: is_parallel={}, num_containers={}, num_steps={}",
+            is_parallel, num_containers, steps.len()
+        ));
 
-            // Fetch output for this step from all actions
-            let mut output = String::new();
-            for action in &step.actions {
-                // Add action name if present and different from step name
-                if let Some(ref action_name) = action.name {
-                    if action_name != &step.name && !action_name.is_empty() {
-                        output.push_str(&format!(">> {}\n", action_name));
-                    }
+        // First pass: collect all URLs that need fetching with their coordinates
+        // (step_index, action_index, url)
+        let mut fetch_tasks: Vec<(usize, usize, String)> = Vec::new();
+        for (step_idx, step) in steps.iter().enumerate() {
+            for (action_idx, action) in step.actions.iter().enumerate() {
+                if let Some(url) = &action.output_url {
+                    fetch_tasks.push((step_idx, action_idx, url.clone()));
                 }
+            }
+        }
 
-                // Try to fetch output if URL is available
-                if let Some(output_url) = &action.output_url {
-                    match fetch_step_output(output_url, &token).await {
-                        Ok(step_output) if !step_output.is_empty() => {
-                            output.push_str(step_output.trim());
-                            if !output.ends_with('\n') {
-                                output.push('\n');
+        // Fetch all outputs in parallel
+        let fetch_futures = fetch_tasks.iter().map(|(_, _, url)| {
+            let url = url.clone();
+            let token = token.clone();
+            async move { fetch_step_output(&url, &token).await }
+        });
+        let fetch_results: Vec<Result<String>> = join_all(fetch_futures).await;
+
+        // Build a map of (step_idx, action_idx) -> fetched output
+        let mut output_map: std::collections::HashMap<(usize, usize), Result<String>> =
+            std::collections::HashMap::new();
+        for (i, result) in fetch_results.into_iter().enumerate() {
+            let (step_idx, action_idx, _) = &fetch_tasks[i];
+            output_map.insert((*step_idx, *action_idx), result);
+        }
+
+        if is_parallel {
+            // For parallel jobs: create container hierarchy
+            // Top level = containers, each container has sub_steps
+            for container_idx in 0..num_containers {
+                let mut container_failed = false;
+                let mut container_sub_steps: Vec<JobStep> = Vec::new();
+
+                for (step_idx, step) in steps.iter().enumerate() {
+                    // Get the action for this container
+                    let action = step.actions.get(container_idx);
+
+                    let (step_status, step_failed, output) = if let Some(action) = action {
+                        let action_status = action.status.as_deref().unwrap_or("unknown").to_lowercase();
+                        let action_failed = action_status == "failed"
+                            || action_status == "timedout"
+                            || action.exit_code.map(|c| c != 0).unwrap_or(false);
+
+                        if action_failed {
+                            container_failed = true;
+                        }
+
+                        // Get output for this step/container
+                        let mut output = String::new();
+                        if action.output_url.is_some() {
+                            match output_map.remove(&(step_idx, container_idx)) {
+                                Some(Ok(step_output)) if !step_output.is_empty() => {
+                                    output = step_output.trim().to_string();
+                                }
+                                Some(Ok(_)) => {
+                                    if let Some(code) = action.exit_code {
+                                        if code != 0 {
+                                            output = format!("Exit code: {}", code);
+                                        }
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    output = format!("(Failed to fetch output: {})", e);
+                                }
+                                None => {}
+                            }
+                        } else if let Some(code) = action.exit_code {
+                            if code != 0 || action_failed {
+                                output = format!("Exit code: {}", code);
                             }
                         }
-                        Ok(_) => {
-                            // No output from URL, show exit code if available
-                            if let Some(code) = action.exit_code {
-                                if code != 0 {
-                                    output.push_str(&format!("Exit code: {}\n", code));
+
+                        if output.is_empty() {
+                            output = "(No output)".to_string();
+                        }
+
+                        (action.status.as_deref().unwrap_or("unknown").to_string(), action_failed, output)
+                    } else {
+                        ("skipped".to_string(), false, "(No data for this container)".to_string())
+                    };
+
+                    container_sub_steps.push(JobStep {
+                        name: step.name.clone(),
+                        status: step_status,
+                        output,
+                        is_failed: step_failed,
+                        sub_steps: None,
+                    });
+                }
+
+                // Create container as top-level step with sub_steps
+                let container_status = if container_failed { "failed" } else { "success" };
+                structured_steps.push(JobStep {
+                    name: format!("Container {}", container_idx),
+                    status: container_status.to_string(),
+                    output: String::new(), // Container itself has no output, only sub-steps do
+                    is_failed: container_failed,
+                    sub_steps: Some(container_sub_steps),
+                });
+            }
+        } else {
+            // For non-parallel jobs: keep steps at top level (original behavior)
+            for (step_idx, step) in steps.into_iter().enumerate() {
+                let action = step.actions.first();
+                let step_status = action
+                    .and_then(|a| a.status.as_deref())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let exit_code = action.and_then(|a| a.exit_code);
+
+                let is_failed = step_status.to_lowercase() == "failed"
+                    || step_status.to_lowercase() == "timedout"
+                    || exit_code.map(|c| c != 0).unwrap_or(false);
+
+                // Get output
+                let mut output = String::new();
+                if let Some(action) = action {
+                    if action.output_url.is_some() {
+                        match output_map.remove(&(step_idx, 0)) {
+                            Some(Ok(step_output)) if !step_output.is_empty() => {
+                                output = step_output.trim().to_string();
+                            }
+                            Some(Ok(_)) => {
+                                if let Some(code) = exit_code {
+                                    if code != 0 {
+                                        output = format!("Exit code: {}", code);
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                output = format!("(Failed to fetch output: {})", e);
+                            }
+                            None => {}
                         }
-                        Err(e) => {
-                            output.push_str(&format!("(Failed to fetch output: {})\n", e));
+                    } else if let Some(code) = exit_code {
+                        if code != 0 || is_failed {
+                            output = format!("Exit code: {}", code);
                         }
                     }
-                } else if let Some(code) = action.exit_code {
-                    // No output URL, show exit code
-                    if code != 0 || is_failed {
-                        output.push_str(&format!("Exit code: {}\n", code));
+                }
+
+                if output.is_empty() {
+                    if is_failed {
+                        output = format!(
+                            "Step failed with status: {}\nExit code: {}\n\nPress 'o' to view in browser for full details.",
+                            step_status,
+                            exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+                        );
+                    } else {
+                        output = "(No output)".to_string();
                     }
                 }
+
+                structured_steps.push(JobStep {
+                    name: step.name,
+                    status: step_status,
+                    output,
+                    is_failed,
+                    sub_steps: None,
+                });
             }
-
-            // If still no output, provide helpful message
-            if output.trim().is_empty() {
-                if is_failed {
-                    output = format!(
-                        "Step failed with status: {}\nExit code: {}\n\nPress 'o' to view in browser for full details.",
-                        step_status,
-                        exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
-                    );
-                } else {
-                    output = "(No output)".to_string();
-                }
-            }
-
-            // Check last line for exit status to detect failures (CI sometimes reports success even when commands fail)
-            let output_indicates_failure = {
-                let last_line = output.trim().lines().last().unwrap_or("").to_lowercase();
-                (last_line.contains("exit status") || last_line.contains("exited with code"))
-                    && !last_line.contains("exit status 0")
-                    && !last_line.contains("code 0")
-            };
-
-            let is_failed = is_failed || output_indicates_failure;
-
-            structured_steps.push(JobStep {
-                name: step.name,
-                status: if is_failed && step_status.to_lowercase() == "success" {
-                    "failed".to_string()
-                } else {
-                    step_status
-                },
-                output,
-                is_failed,
-            });
         }
     }
 
@@ -518,6 +653,13 @@ pub async fn fetch_circleci_workflows_for_branch(
         let workflow_jobs: Vec<WorkflowJob> = jobs
             .into_iter()
             .map(|job| {
+                // Construct details URL with job number for proper log fetching
+                let details_url = job.job_number.map(|num| {
+                    format!(
+                        "https://app.circleci.com/pipelines/gh/{}/{}/{}/workflows/{}/jobs/{}",
+                        owner, repo, latest_pipeline.number, workflow.id, num
+                    )
+                });
                 WorkflowJob {
                     id: job.job_number.unwrap_or(0),
                     name: job.name,
@@ -525,7 +667,7 @@ pub async fn fetch_circleci_workflows_for_branch(
                     conclusion: parse_circleci_conclusion(&job.status),
                     started_at: job.started_at,
                     completed_at: job.stopped_at,
-                    details_url: None, // CircleCI doesn't provide this in job list
+                    details_url,
                     summary: None,
                     text: None,
                     annotations: Vec::new(),
@@ -553,43 +695,65 @@ pub async fn fetch_circleci_workflows_for_branch(
     Ok(workflow_runs)
 }
 
-/// Extract CircleCI job number from a details URL
+/// Extract CircleCI job number (build number) from a details URL
 /// CircleCI URLs can be in various formats:
-/// - https://circleci.com/gh/owner/repo/123 (legacy)
+/// - https://circleci.com/gh/owner/repo/123 (legacy - 123 is build number)
 /// - https://circleci.com/gh/owner/repo/123?query=param (legacy with query)
-/// - https://app.circleci.com/pipelines/gh/owner/repo/123/workflows/abc/jobs/456
+/// - https://app.circleci.com/pipelines/gh/owner/repo/123/workflows/abc/jobs/456 (new - 456 is build number)
 /// - https://app.circleci.com/pipelines/github/owner/repo/123/workflows/abc/jobs/456
+///
+/// IMPORTANT: Workflow-level URLs (no /jobs/ segment) contain pipeline numbers, NOT build numbers.
+/// We must NOT extract from those URLs as it would fetch the wrong job's steps.
 pub fn extract_job_number_from_url(url: &str) -> Option<u64> {
+    debug_log(&format!("extract_job_number_from_url called with: {}", url));
+
     if !url.contains("circleci.com") {
+        debug_log("  -> Not a CircleCI URL, returning None");
         return None;
     }
 
     // Remove query string and fragment
     let url_path = url.split('?').next().unwrap_or(url);
     let url_path = url_path.split('#').next().unwrap_or(url_path);
+    debug_log(&format!("  URL path (cleaned): {}", url_path));
 
-    // Pattern 1: New format with /jobs/ path
+    // Pattern 1: New format with /jobs/ path - the number after /jobs/ is the build number
     // https://app.circleci.com/pipelines/gh/owner/repo/123/workflows/abc/jobs/456
     if let Some(jobs_idx) = url_path.find("/jobs/") {
         let after_jobs = &url_path[jobs_idx + 6..];
         // Extract digits until we hit a non-digit or end
         let num_str: String = after_jobs.chars().take_while(|c| c.is_ascii_digit()).collect();
+        debug_log(&format!("  Pattern 1 (/jobs/): found, after_jobs='{}', num_str='{}'", after_jobs, num_str));
         if !num_str.is_empty() {
-            return num_str.parse().ok();
+            let result = num_str.parse().ok();
+            debug_log(&format!("  -> Extracted job number: {:?}", result));
+            return result;
         }
     }
 
-    // Pattern 2: Legacy format - last numeric path segment
+    // Pattern 2: New workflow-level URL without /jobs/ - DO NOT extract the pipeline number!
+    // https://app.circleci.com/pipelines/gh/owner/repo/123/workflows/abc
+    // The 123 here is a pipeline number, not a build number - fetching it would show wrong steps.
+    if url_path.contains("/pipelines/") {
+        // This is a modern URL but without a job number - we can't determine the build number
+        debug_log("  Pattern 2 (/pipelines/ without /jobs/): returning None to avoid pipeline number confusion");
+        return None;
+    }
+
+    // Pattern 3: Legacy format - last numeric path segment is the build number
     // https://circleci.com/gh/owner/repo/123
+    // These URLs directly point to a specific build.
     let segments: Vec<&str> = url_path
         .trim_end_matches('/')
         .split('/')
         .filter(|s| !s.is_empty())
         .collect();
+    debug_log(&format!("  Pattern 3 (legacy): segments={:?}", segments));
 
-    // Look for the last numeric segment (might be build number)
+    // Look for the last numeric segment (the build number)
     for segment in segments.iter().rev() {
         if let Ok(num) = segment.parse::<u64>() {
+            debug_log(&format!("  -> Extracted job number (legacy): {}", num));
             return Some(num);
         }
     }

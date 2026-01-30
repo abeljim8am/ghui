@@ -251,7 +251,8 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
                 KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsNextStep),
                 KeyCode::Char('k') | KeyCode::Up => Some(Message::JobLogsPrevStep),
                 KeyCode::Enter | KeyCode::Char(' ') => Some(Message::JobLogsToggleStep),
-                KeyCode::Char('y') => Some(Message::CopyJobLogs),
+                KeyCode::Char('y') => Some(Message::SmartCopyStepOutput),
+                KeyCode::Char('x') => Some(Message::FullCopyStepOutput),
                 KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
                 _ => None,
             };
@@ -262,7 +263,8 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
             KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
             KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsScrollDown),
             KeyCode::Char('k') | KeyCode::Up => Some(Message::JobLogsScrollUp),
-            KeyCode::Char('y') => Some(Message::CopyJobLogs),
+            KeyCode::Char('y') => Some(Message::SmartCopyStepOutput),
+            KeyCode::Char('x') => Some(Message::FullCopyStepOutput),
             KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
             _ => None,
         };

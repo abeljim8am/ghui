@@ -591,6 +591,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "futures",
  "nucleo-matcher",
  "octocrab",
  "pulldown-cmark",
