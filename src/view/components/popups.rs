@@ -660,10 +660,192 @@ fn render_annotations_view(f: &mut Frame, app: &App) {
     f.render_widget(content, content_area);
 }
 
-/// Render raw logs view (original behavior)
+/// Render raw logs view - supports both plain text and foldable steps
 fn render_raw_logs_view(f: &mut Frame, app: &App) {
     let area = f.area();
 
+    // Check if we have foldable steps
+    let has_steps = app
+        .job_logs
+        .as_ref()
+        .and_then(|l| l.steps.as_ref())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+
+    if has_steps {
+        render_foldable_steps_view(f, app, area);
+    } else {
+        render_plain_logs_view(f, app, area);
+    }
+}
+
+/// Render foldable steps view (CircleCI)
+fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
+    // Get job name for title
+    let title = if let Some(ref logs) = app.job_logs {
+        let step_count = logs.steps.as_ref().map(|s| s.len()).unwrap_or(0);
+        let failed_count = logs
+            .steps
+            .as_ref()
+            .map(|s| s.iter().filter(|st| st.is_failed).count())
+            .unwrap_or(0);
+        if failed_count > 0 {
+            format!(" {} ({} steps, {} failed) ", logs.job_name, step_count, failed_count)
+        } else {
+            format!(" {} ({} steps) ", logs.job_name, step_count)
+        }
+    } else {
+        " Job Logs ".to_string()
+    };
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(Color::Cyan).bold())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into content and footer
+    let layout = Layout::vertical([
+        Constraint::Min(1),    // Content: steps
+        Constraint::Length(2), // Footer: key hints
+    ])
+    .split(inner_area);
+
+    let content_area = layout[0];
+    let footer_area = layout[1];
+
+    // Render footer with step-specific hints
+    let footer_line = if let Some(ref feedback) = app.clipboard_feedback {
+        Line::from(vec![Span::styled(
+            format!("{} {}", icons::STATUS_SUCCESS, feedback),
+            Style::default().fg(Color::Green),
+        )])
+    } else {
+        Line::from(vec![
+            Span::styled("j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" nav  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" expand  "),
+            Span::styled("y", Style::default().fg(Color::Yellow)),
+            Span::raw(" copy  "),
+            Span::styled("o", Style::default().fg(Color::Yellow)),
+            Span::raw(" open  "),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ])
+    };
+    let footer = Paragraph::new(vec![Line::raw(""), footer_line]);
+    f.render_widget(footer, footer_area);
+
+    // Render steps
+    if let Some(ref logs) = app.job_logs {
+        if let Some(ref steps) = logs.steps {
+            let mut lines: Vec<Line> = Vec::new();
+            let mut selected_line_idx: usize = 0;
+            let content_width = content_area.width as usize;
+
+            for (idx, step) in steps.iter().enumerate() {
+                let is_selected = idx == app.job_logs_selected_step;
+                let is_expanded = app
+                    .job_logs_expanded_steps
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(false);
+
+                if is_selected {
+                    selected_line_idx = lines.len();
+                }
+
+                // Step header
+                let prefix = if is_selected {
+                    icons::SELECTOR
+                } else {
+                    "  "
+                };
+                let fold_icon = if is_expanded { "▼" } else { "▶" };
+                let status_icon = if step.is_failed {
+                    icons::STATUS_FAILURE
+                } else {
+                    icons::STATUS_SUCCESS
+                };
+                let status_color = if step.is_failed {
+                    Color::Red
+                } else {
+                    Color::Green
+                };
+
+                let header_style = if is_selected {
+                    Style::default().fg(Color::Cyan).bold()
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                lines.push(Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled(fold_icon, Style::default().fg(Color::DarkGray)),
+                    Span::raw(" "),
+                    Span::styled(status_icon, Style::default().fg(status_color)),
+                    Span::raw(" "),
+                    Span::styled(&step.name, header_style),
+                    Span::styled(
+                        format!(" [{}]", step.status),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+
+                // Show output if expanded
+                if is_expanded {
+                    // Wrap and indent the output
+                    let indent = "     ";
+                    let max_width = content_width.saturating_sub(indent.len() + 2);
+
+                    let line_style = if step.is_failed {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
+                    for line in step.output.lines() {
+                        if line.is_empty() {
+                            lines.push(Line::raw(""));
+                            continue;
+                        }
+
+                        // Wrap long lines properly
+                        let wrapped = wrap_text(line, max_width);
+                        for wrapped_line in wrapped {
+                            lines.push(Line::from(vec![
+                                Span::raw(indent),
+                                Span::styled(wrapped_line, line_style),
+                            ]));
+                        }
+                    }
+                    lines.push(Line::raw("")); // Blank line after expanded step
+                }
+            }
+
+            // Calculate scroll to keep selected step visible
+            let visible_height = content_area.height as usize;
+            let scroll_offset = if selected_line_idx >= visible_height.saturating_sub(2) {
+                (selected_line_idx.saturating_sub(visible_height.saturating_sub(4))) as u16
+            } else {
+                0
+            };
+
+            // Clear the content area first to prevent artifacts
+            f.render_widget(Clear, content_area);
+
+            let content = Paragraph::new(lines).scroll((scroll_offset, 0));
+            f.render_widget(content, content_area);
+        }
+    }
+}
+
+/// Render plain text logs (GitHub Actions, etc.)
+fn render_plain_logs_view(f: &mut Frame, app: &App, area: Rect) {
     // Get job name for title
     let title = if let Some(ref logs) = app.job_logs {
         format!(" {} ", logs.job_name)

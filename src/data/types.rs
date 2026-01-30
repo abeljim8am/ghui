@@ -287,6 +287,17 @@ pub struct JobLogs {
     pub job_id: u64,
     pub job_name: String,
     pub content: String,
+    /// Structured steps for foldable display (CircleCI)
+    pub steps: Option<Vec<JobStep>>,
+}
+
+/// A step within a job (for CircleCI foldable logs)
+#[derive(Debug, Clone)]
+pub struct JobStep {
+    pub name: String,
+    pub status: String,
+    pub output: String,
+    pub is_failed: bool,
 }
 
 /// A workflow run (e.g., "CI", "Tests")

@@ -579,6 +579,7 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
             job_name: job_name.to_string(),
             content: "No logs available for this check.\n\nPress 'o' to open it in your browser."
                 .to_string(),
+            steps: None,
         });
     }
 
@@ -603,6 +604,7 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
                 job_id,
                 job_name: job_name.to_string(),
                 content: "No logs available for this check.\n\nThe job may not have produced logs yet, or logs may have expired.".to_string(),
+                steps: None,
             });
         }
         anyhow::bail!("Failed to fetch job logs: {}", stderr);
@@ -618,6 +620,7 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
         } else {
             content
         },
+        steps: None,
     })
 }
 

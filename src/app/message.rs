@@ -19,6 +19,7 @@ pub enum Command {
     ExitAfterCheckout,
     StartActionsFetch(String, String, u64, String), // owner, repo, pr_number, head_sha
     StartJobLogsFetch(String, String, u64, String), // owner, repo, job_id, job_name
+    StartCircleCIJobLogsFetch(String, String, u64, String), // owner, repo, job_number, job_name
     StartPreviewFetch(String, String, u64),         // owner, repo, pr_number
 }
 
@@ -81,6 +82,9 @@ pub enum Message {
     JobLogsScrollUp,
     JobLogsScrollDown,
     CopyJobLogs,
+    JobLogsNextStep,
+    JobLogsPrevStep,
+    JobLogsToggleStep,
 
     // Annotations view (reviewdog, etc.)
     AnnotationNext,

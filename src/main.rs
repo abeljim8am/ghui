@@ -98,6 +98,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
+        // Check for CircleCI job logs fetch results
+        if let Some(result) = app.check_circleci_logs_result() {
+            if let Some(cmd) = update(app, Message::JobLogsReceived(result)) {
+                if handle_command(app, cmd) {
+                    return Ok(());
+                }
+            }
+        }
+
         // Check for preview fetch results
         if let Some(result) = app.check_preview_result() {
             if let Some(cmd) = update(app, Message::PreviewDataReceived(result)) {
@@ -174,6 +183,10 @@ fn handle_command(app: &mut App, cmd: Command) -> bool {
             app.start_preview_fetch(&owner, &repo, pr_number);
             false
         }
+        Command::StartCircleCIJobLogsFetch(owner, repo, job_number, job_name) => {
+            app.start_circleci_logs_fetch(&owner, &repo, job_number, &job_name);
+            false
+        }
     }
 }
 
@@ -223,7 +236,28 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
                 _ => None,
             };
         }
-        // Regular logs view
+        // Check if we have foldable steps
+        let has_steps = app
+            .job_logs
+            .as_ref()
+            .and_then(|l| l.steps.as_ref())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
+        if has_steps {
+            // Step navigation mode
+            return match key {
+                KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
+                KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsNextStep),
+                KeyCode::Char('k') | KeyCode::Up => Some(Message::JobLogsPrevStep),
+                KeyCode::Enter | KeyCode::Char(' ') => Some(Message::JobLogsToggleStep),
+                KeyCode::Char('y') => Some(Message::CopyJobLogs),
+                KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),
+                _ => None,
+            };
+        }
+
+        // Regular logs view (no steps)
         return match key {
             KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
             KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsScrollDown),

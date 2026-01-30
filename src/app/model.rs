@@ -9,8 +9,8 @@ use crate::data::{
     SPINNER_FRAMES,
 };
 use crate::services::{
-    fetch_actions_for_pr, fetch_job_logs, fetch_pr_preview, fetch_prs_graphql, load_cache,
-    load_label_filters, save_cache,
+    fetch_actions_for_pr, fetch_circleci_job_logs, fetch_job_logs, fetch_pr_preview,
+    fetch_prs_graphql, load_cache, load_label_filters, save_cache,
 };
 use crate::utils::get_current_repo;
 
@@ -62,6 +62,8 @@ pub struct App {
     pub job_logs: Option<JobLogs>,
     pub job_logs_loading: bool,
     pub job_logs_scroll: u16,
+    pub job_logs_selected_step: usize,      // Currently selected step
+    pub job_logs_expanded_steps: Vec<bool>, // Which steps are expanded
 
     // Annotations view state (for reviewdog, etc.)
     pub annotations_view: bool, // true if viewing annotations, false for raw logs
@@ -116,6 +118,10 @@ pub struct App {
     // Preview async communication
     pub preview_tx: Sender<(String, String, u64)>, // owner, repo, pr_number
     pub preview_rx: Receiver<FetchResult>,
+
+    // CircleCI job logs async communication
+    pub circleci_logs_tx: Sender<(String, String, u64, String)>, // owner, repo, job_number, job_name
+    pub circleci_logs_rx: Receiver<FetchResult>,
 
     // Spinner state
     pub spinner_idx: usize,
@@ -210,6 +216,26 @@ impl App {
             }
         });
 
+        // Channel for CircleCI job logs fetching
+        let (circleci_logs_tx, circleci_logs_rx_internal) =
+            mpsc::channel::<(String, String, u64, String)>();
+        let (circleci_logs_result_tx, circleci_logs_rx) = mpsc::channel::<FetchResult>();
+
+        // Spawn background thread for fetching CircleCI job logs
+        thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            while let Ok((owner, repo, job_number, job_name)) = circleci_logs_rx_internal.recv() {
+                let result = rt.block_on(fetch_circleci_job_logs(&owner, &repo, job_number, &job_name));
+                let msg = match result {
+                    Ok(logs) => FetchResult::JobLogsSuccess(logs),
+                    Err(e) => FetchResult::JobLogsError(format!("{}", e)),
+                };
+                if circleci_logs_result_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+
         // Get repo info for loading cache
         let (owner, repo_name) = get_current_repo().unzip();
 
@@ -271,6 +297,8 @@ impl App {
             job_logs: None,
             job_logs_loading: false,
             job_logs_scroll: 0,
+            job_logs_selected_step: 0,
+            job_logs_expanded_steps: Vec::new(),
             annotations_view: false,
             annotations: Vec::new(),
             selected_annotation_index: 0,
@@ -301,6 +329,8 @@ impl App {
             job_logs_rx,
             preview_tx,
             preview_rx,
+            circleci_logs_tx,
+            circleci_logs_rx,
             spinner_idx: 0,
             last_spinner_update: Instant::now(),
         })
@@ -446,5 +476,29 @@ impl App {
 
     pub fn check_preview_result(&mut self) -> Option<FetchResult> {
         self.preview_rx.try_recv().ok()
+    }
+
+    // CircleCI job logs fetch management
+
+    pub fn start_circleci_logs_fetch(
+        &mut self,
+        owner: &str,
+        repo: &str,
+        job_number: u64,
+        job_name: &str,
+    ) {
+        self.job_logs_loading = true;
+        self.job_logs = None;
+        self.job_logs_scroll = 0;
+        let _ = self.circleci_logs_tx.send((
+            owner.to_string(),
+            repo.to_string(),
+            job_number,
+            job_name.to_string(),
+        ));
+    }
+
+    pub fn check_circleci_logs_result(&mut self) -> Option<FetchResult> {
+        self.circleci_logs_rx.try_recv().ok()
     }
 }

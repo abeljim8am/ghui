@@ -5,7 +5,10 @@ use crate::data::{
     AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowJob, WorkflowStatus,
 };
 use crate::icons;
-use crate::services::{delete_label_filter, filter_prs, load_label_filters, save_label_filter};
+use crate::services::{
+    delete_label_filter, extract_job_number_from_url, filter_prs, is_circleci_configured,
+    is_circleci_url, load_label_filters, save_label_filter,
+};
 use crate::utils::checkout_branch;
 use crate::view::calculate_preview_positions;
 
@@ -198,6 +201,18 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
         }
         Message::CopyJobLogs => {
             copy_job_logs_to_clipboard(app);
+            None
+        }
+        Message::JobLogsNextStep => {
+            job_logs_next_step(app);
+            None
+        }
+        Message::JobLogsPrevStep => {
+            job_logs_prev_step(app);
+            None
+        }
+        Message::JobLogsToggleStep => {
+            job_logs_toggle_step(app);
             None
         }
 
@@ -858,6 +873,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                 job_id: job.id,
                 job_name: job.name.clone(),
                 content: String::new(), // Not used in annotations view
+                steps: None,
             });
             app.job_logs_loading = false;
             return None;
@@ -882,6 +898,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                     "{} No issues found.\n\nPress 'o' to view details in browser.",
                     icons::STATUS_SUCCESS
                 ),
+                steps: None,
             });
             app.job_logs_loading = false;
             return None;
@@ -900,16 +917,33 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                 job_id: job.id,
                 job_name: job.name.clone(),
                 content,
+                steps: None,
             });
             app.job_logs_loading = false;
             return None;
         }
 
-        // No annotations or summary, fetch logs via gh CLI
+        // No annotations or summary, fetch logs
         app.annotations_view = false;
         app.annotations.clear();
         app.job_logs_loading = true;
         app.job_logs = None;
+
+        // Check if this is a CircleCI job and we have CircleCI configured
+        if let Some(ref details_url) = job.details_url {
+            if is_circleci_url(details_url) && is_circleci_configured() {
+                if let Some(job_number) = extract_job_number_from_url(details_url) {
+                    return Some(Command::StartCircleCIJobLogsFetch(
+                        owner,
+                        repo,
+                        job_number,
+                        job.name,
+                    ));
+                }
+            }
+        }
+
+        // Fall back to GitHub logs via gh CLI
         return Some(Command::StartJobLogsFetch(owner, repo, job.id, job.name));
     }
     None
@@ -920,6 +954,8 @@ fn close_job_logs(app: &mut App) {
     app.job_logs = None;
     app.job_logs_loading = false;
     app.job_logs_scroll = 0;
+    app.job_logs_selected_step = 0;
+    app.job_logs_expanded_steps.clear();
     app.annotations_view = false;
     app.annotations.clear();
     app.selected_annotation_index = 0;
@@ -929,8 +965,30 @@ fn close_job_logs(app: &mut App) {
 fn handle_job_logs_result(app: &mut App, result: FetchResult) {
     match result {
         FetchResult::JobLogsSuccess(logs) => {
+            // Initialize step state for foldable steps
+            if let Some(ref steps) = logs.steps {
+                // Default: expand failed steps and last step
+                let expanded: Vec<bool> = steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, step)| step.is_failed || i == steps.len() - 1)
+                    .collect();
+
+                // Select the first failed step, or the last step if none failed
+                let selected = steps
+                    .iter()
+                    .position(|s| s.is_failed)
+                    .unwrap_or(steps.len().saturating_sub(1));
+
+                app.job_logs_expanded_steps = expanded;
+                app.job_logs_selected_step = selected;
+            } else {
+                app.job_logs_expanded_steps.clear();
+                app.job_logs_selected_step = 0;
+            }
             app.job_logs = Some(logs);
             app.job_logs_loading = false;
+            app.job_logs_scroll = 0;
         }
         FetchResult::JobLogsError(e) => {
             app.job_logs_loading = false;
@@ -938,6 +996,29 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
             app.show_error_popup = true;
         }
         _ => {}
+    }
+}
+
+fn job_logs_next_step(app: &mut App) {
+    if let Some(ref logs) = app.job_logs {
+        if let Some(ref steps) = logs.steps {
+            if app.job_logs_selected_step < steps.len().saturating_sub(1) {
+                app.job_logs_selected_step += 1;
+            }
+        }
+    }
+}
+
+fn job_logs_prev_step(app: &mut App) {
+    if app.job_logs_selected_step > 0 {
+        app.job_logs_selected_step -= 1;
+    }
+}
+
+fn job_logs_toggle_step(app: &mut App) {
+    let idx = app.job_logs_selected_step;
+    if idx < app.job_logs_expanded_steps.len() {
+        app.job_logs_expanded_steps[idx] = !app.job_logs_expanded_steps[idx];
     }
 }
 
