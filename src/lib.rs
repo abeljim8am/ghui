@@ -7,4 +7,5 @@ pub mod view;
 
 pub use app::{update, App, Command, FetchResult, Message};
 pub use data::{PrFilter, PullRequest};
+pub use services::cache::get_cache_path;
 pub use view::ui;

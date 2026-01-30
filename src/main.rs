@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Parser;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -11,7 +12,35 @@ use std::{io, time::Duration};
 
 use ghui::{ui, update, App, Command, Message, PrFilter};
 
+/// A TUI for GitHub pull requests
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(disable_version_flag = true)]
+struct Cli {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: (),
+
+    /// Clear the local cache and exit
+    #[arg(long)]
+    clear_cache: bool,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.clear_cache {
+        let cache_path = ghui::get_cache_path()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine cache path"))?;
+        if cache_path.exists() {
+            std::fs::remove_file(&cache_path)?;
+            eprintln!("Cache cleared: {}", cache_path.display());
+        } else {
+            eprintln!("No cache file found at: {}", cache_path.display());
+        }
+        return Ok(());
+    }
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
