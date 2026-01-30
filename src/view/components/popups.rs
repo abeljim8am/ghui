@@ -773,6 +773,56 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         .split(vertical[0])[0]
 }
 
+/// Render a toast notification at the bottom of the screen (for clipboard feedback)
+pub fn render_toast(f: &mut Frame, app: &App) {
+    // URL popup - centered modal that requires manual dismiss
+    if let Some(ref url) = app.show_url_popup {
+        let area = f.area();
+        let popup_width = (url.len() as u16 + 6).min(area.width.saturating_sub(4)).max(30);
+        let popup_height = 5;
+        let popup_area = centered_rect(popup_width, popup_height, area);
+
+        f.render_widget(Clear, popup_area);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(url.as_str()).centered(),
+            Line::from(""),
+            Line::from("Press Enter or q to close").centered().style(Style::default().fg(Color::DarkGray)),
+        ];
+
+        let popup = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Open URL ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        f.render_widget(popup, popup_area);
+        return;
+    }
+
+    // Clipboard feedback - auto-dismiss toast at bottom
+    if let Some(ref message) = app.clipboard_feedback {
+        if app.clipboard_feedback_time.elapsed().as_secs() < 2 {
+            let area = f.area();
+            // Position at bottom center
+            let toast_width = (message.len() as u16 + 4).min(area.width.saturating_sub(4));
+            let toast_area = Rect {
+                x: (area.width.saturating_sub(toast_width)) / 2,
+                y: area.height.saturating_sub(3),
+                width: toast_width,
+                height: 1,
+            };
+
+            f.render_widget(Clear, toast_area);
+            let toast = Paragraph::new(message.as_str())
+                .style(Style::default().fg(Color::Black).bg(Color::Yellow))
+                .centered();
+            f.render_widget(toast, toast_area);
+        }
+    }
+}
+
 /// Truncate a string to a maximum length with ellipsis
 pub fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {

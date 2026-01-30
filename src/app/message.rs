@@ -50,6 +50,7 @@ pub enum Message {
     ToggleHelp,
     DismissHelp,
     DismissError,
+    DismissUrlPopup,
 
     // Labels
     OpenLabelsPopup,

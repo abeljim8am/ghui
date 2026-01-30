@@ -83,6 +83,9 @@ pub struct App {
     pub clipboard_feedback: Option<String>,
     pub clipboard_feedback_time: Instant,
 
+    // URL popup (for container environments where we can't open browser)
+    pub show_url_popup: Option<String>,
+
     // Error state
     pub error: Option<String>,
 
@@ -282,6 +285,7 @@ impl App {
             preview_pr_info: None,
             clipboard_feedback: None,
             clipboard_feedback_time: Instant::now(),
+            show_url_popup: None,
             error: None,
             pending_checkout_branch: None,
             label_input: String::new(),

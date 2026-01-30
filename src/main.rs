@@ -172,6 +172,14 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
         };
     }
 
+    // URL popup (shown in containers when we can't open browser)
+    if app.show_url_popup.is_some() {
+        return match key {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Some(Message::DismissUrlPopup),
+            _ => None,
+        };
+    }
+
     // Job logs view (nested inside workflows view)
     if app.show_workflows_view && app.show_job_logs {
         // Annotations view has different keybindings

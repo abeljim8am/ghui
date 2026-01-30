@@ -104,6 +104,10 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
             app.show_error_popup = false;
             None
         }
+        Message::DismissUrlPopup => {
+            app.show_url_popup = None;
+            None
+        }
 
         // Labels
         Message::OpenLabelsPopup => {
@@ -350,13 +354,15 @@ fn update_filtered_indices(app: &mut App) {
     app.filtered_indices = filter_prs(prs, &app.search_query);
 }
 
-fn open_selected(app: &App) {
+fn open_selected(app: &mut App) {
     if let Some(pr) = app.selected_pr() {
         let url = format!(
             "https://github.com/{}/{}/pull/{}",
             pr.repo_owner, pr.repo_name, pr.number
         );
-        let _ = ProcessCommand::new("open").arg(&url).spawn();
+        if let Some(display_url) = open_url(&url) {
+            app.show_url_popup = Some(display_url);
+        }
     }
 }
 
@@ -715,29 +721,39 @@ fn actions_previous_job(app: &mut App) {
     }
 }
 
-fn open_actions_in_browser(app: &App) {
-    if let Some(ref data) = app.actions_data {
+fn open_actions_in_browser(app: &mut App) {
+    let url_to_open = if let Some(ref data) = app.actions_data {
         // Find the currently selected job and open its details URL if available
         let mut current_idx = 0;
-        for run in &data.workflow_runs {
+        let mut found_url: Option<String> = None;
+        'outer: for run in &data.workflow_runs {
             for job in &run.jobs {
                 if current_idx == app.selected_job_index {
                     // Try job-specific URL first, then fall back to run URL
                     if let Some(ref url) = job.details_url {
-                        let _ = ProcessCommand::new("open").arg(url).spawn();
+                        found_url = Some(url.clone());
                     } else if !run.html_url.is_empty() {
-                        let _ = ProcessCommand::new("open").arg(&run.html_url).spawn();
+                        found_url = Some(run.html_url.clone());
                     }
-                    return;
+                    break 'outer;
                 }
                 current_idx += 1;
             }
         }
         // If no jobs or selection is out of range, open the first run
-        if let Some(run) = data.workflow_runs.first() {
-            if !run.html_url.is_empty() {
-                let _ = ProcessCommand::new("open").arg(&run.html_url).spawn();
-            }
+        found_url.or_else(|| {
+            data.workflow_runs
+                .first()
+                .filter(|run| !run.html_url.is_empty())
+                .map(|run| run.html_url.clone())
+        })
+    } else {
+        None
+    };
+
+    if let Some(url) = url_to_open {
+        if let Some(display_url) = open_url(&url) {
+            app.show_url_popup = Some(display_url);
         }
     }
 }
@@ -1008,13 +1024,54 @@ fn copy_annotations(app: &mut App) {
     }
 }
 
+/// Detects if running inside a container (devcontainer, Docker, etc.)
+fn is_container() -> bool {
+    std::env::var("DOCKER_CONTAINER").is_ok()
+        || std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/run/.containerenv").exists()
+}
+
+/// Copies text to clipboard using OSC 52 escape sequence.
+/// Works in terminals that support it (VS Code, iTerm2, Windows Terminal, etc.)
+fn copy_via_osc52(text: &str) -> bool {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::io::Write;
+
+    let encoded = STANDARD.encode(text);
+    // OSC 52 sequence: ESC ] 52 ; c ; <base64> BEL
+    let sequence = format!("\x1b]52;c;{}\x07", encoded);
+
+    // Write to stdout (terminal)
+    let mut stdout = std::io::stdout();
+    if stdout.write_all(sequence.as_bytes()).is_err() {
+        return false;
+    }
+    stdout.flush().is_ok()
+}
+
 fn copy_to_clipboard(text: &str) -> bool {
-    let mut child = match ProcessCommand::new("pbcopy")
+    // In containers, use OSC 52 which works through the terminal
+    if is_container() {
+        return copy_via_osc52(text);
+    }
+
+    // Native clipboard commands
+    #[cfg(target_os = "macos")]
+    let cmd = "pbcopy";
+    #[cfg(target_os = "linux")]
+    let cmd = "xclip";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let cmd = "pbcopy"; // fallback
+
+    let mut child = match ProcessCommand::new(cmd)
         .stdin(std::process::Stdio::piped())
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => {
+            // Fallback to OSC 52 if native command fails
+            return copy_via_osc52(text);
+        }
     };
 
     if let Some(stdin) = child.stdin.as_mut() {
@@ -1025,6 +1082,26 @@ fn copy_to_clipboard(text: &str) -> bool {
     }
 
     child.wait().is_ok()
+}
+
+/// Opens a URL in the browser, with container support.
+/// Returns Some(url) if the URL should be displayed to the user (in containers).
+fn open_url(url: &str) -> Option<String> {
+    // In container, return URL for display (user can ctrl+click)
+    if is_container() {
+        return Some(url.to_string());
+    }
+
+    // Native open commands
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let cmd = "open"; // fallback
+
+    let _ = ProcessCommand::new(cmd).arg(url).spawn();
+    None
 }
 
 // Preview view helpers
