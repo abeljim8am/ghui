@@ -21,6 +21,7 @@ pub enum Command {
     StartJobLogsFetch(String, String, u64, String), // owner, repo, job_id, job_name
     StartCircleCIJobLogsFetch(String, String, u64, String), // owner, repo, job_number, job_name
     StartPreviewFetch(String, String, u64),         // owner, repo, pr_number
+    OpenInEditor(String, String),                   // content, filename
 }
 
 /// All possible messages/events in the application
@@ -85,6 +86,7 @@ pub enum Message {
     JobLogsNextStep,
     JobLogsPrevStep,
     JobLogsToggleStep,
+    OpenStepInEditor,    // Enter - open step output in $EDITOR
     SmartCopyStepOutput, // y - extract test failures/errors
     FullCopyStepOutput,  // x - copy full step output
 

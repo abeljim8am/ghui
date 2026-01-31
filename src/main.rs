@@ -74,7 +74,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check for async fetch results
         if let Some(result) = app.check_fetch_result() {
             if let Some(cmd) = update(app, Message::FetchComplete(result)) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -83,7 +83,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check for actions fetch results
         if let Some(result) = app.check_actions_result() {
             if let Some(cmd) = update(app, Message::ActionsDataReceived(result)) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -92,7 +92,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check for job logs fetch results
         if let Some(result) = app.check_job_logs_result() {
             if let Some(cmd) = update(app, Message::JobLogsReceived(result)) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -101,7 +101,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check for CircleCI job logs fetch results
         if let Some(result) = app.check_circleci_logs_result() {
             if let Some(cmd) = update(app, Message::JobLogsReceived(result)) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -110,7 +110,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check for preview fetch results
         if let Some(result) = app.check_preview_result() {
             if let Some(cmd) = update(app, Message::PreviewDataReceived(result)) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -119,7 +119,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Auto-poll actions if workflows view is open and has pending jobs
         if app.should_poll_actions() {
             if let Some(cmd) = update(app, Message::RefreshActions) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -128,7 +128,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Auto-refresh main page every 30 seconds
         if app.should_refresh_main() {
             if let Some(cmd) = update(app, Message::Refresh) {
-                if handle_command(app, cmd) {
+                if handle_command(app, cmd, terminal) {
                     return Ok(());
                 }
             }
@@ -136,7 +136,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         // Update spinner
         if let Some(cmd) = update(app, Message::Tick) {
-            if handle_command(app, cmd) {
+            if handle_command(app, cmd, terminal) {
                 return Ok(());
             }
         }
@@ -151,7 +151,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     let msg = key_to_message(app, key.code, key.modifiers);
                     if let Some(msg) = msg {
                         if let Some(cmd) = update(app, msg) {
-                            if handle_command(app, cmd) {
+                            if handle_command(app, cmd, terminal) {
                                 return Ok(());
                             }
                         }
@@ -163,7 +163,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 }
 
 /// Handle a command returned from update
-fn handle_command(app: &mut App, cmd: Command) -> bool {
+fn handle_command(
+    app: &mut App,
+    cmd: Command,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> bool {
     match cmd {
         Command::Quit => true,
         Command::ExitAfterCheckout => true,
@@ -186,6 +190,68 @@ fn handle_command(app: &mut App, cmd: Command) -> bool {
         Command::StartCircleCIJobLogsFetch(owner, repo, job_number, job_name) => {
             app.start_circleci_logs_fetch(&owner, &repo, job_number, &job_name);
             false
+        }
+        Command::OpenInEditor(content, filename) => {
+            open_in_editor(app, terminal, &content, &filename);
+            false
+        }
+    }
+}
+
+/// Open content in $EDITOR, properly suspending and restoring the TUI
+fn open_in_editor(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    content: &str,
+    filename: &str,
+) {
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join(filename);
+
+    // Write content to temp file
+    if let Err(e) = std::fs::write(&temp_file, content) {
+        app.clipboard_feedback = Some(format!("Failed to write temp file: {}", e));
+        app.clipboard_feedback_time = std::time::Instant::now();
+        return;
+    }
+
+    // Get editor from $EDITOR or fall back to common editors
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vim".to_string());
+
+    // Leave alternate screen and disable raw mode
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
+
+    // Open editor and wait for it to finish
+    let result = std::process::Command::new(&editor)
+        .arg(&temp_file)
+        .status();
+
+    // Re-enter alternate screen and enable raw mode
+    let _ = enable_raw_mode();
+    let _ = execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    );
+    // Force a full redraw
+    let _ = terminal.clear();
+
+    // Handle result and clean up
+    match result {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&temp_file);
+        }
+        Err(e) => {
+            app.clipboard_feedback = Some(format!("Failed to open {}: {}", editor, e));
+            app.clipboard_feedback_time = std::time::Instant::now();
+            let _ = std::fs::remove_file(&temp_file);
         }
     }
 }
@@ -250,7 +316,8 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
                 KeyCode::Esc | KeyCode::Char('q') => Some(Message::CloseJobLogs),
                 KeyCode::Char('j') | KeyCode::Down => Some(Message::JobLogsNextStep),
                 KeyCode::Char('k') | KeyCode::Up => Some(Message::JobLogsPrevStep),
-                KeyCode::Enter | KeyCode::Char(' ') => Some(Message::JobLogsToggleStep),
+                KeyCode::Char(' ') => Some(Message::JobLogsToggleStep),
+                KeyCode::Enter => Some(Message::OpenStepInEditor),
                 KeyCode::Char('y') => Some(Message::SmartCopyStepOutput),
                 KeyCode::Char('x') => Some(Message::FullCopyStepOutput),
                 KeyCode::Char('o') => Some(Message::OpenActionsInBrowser),

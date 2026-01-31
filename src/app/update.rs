@@ -4,7 +4,8 @@ use std::io::Write;
 use std::process::Command as ProcessCommand;
 
 use crate::data::{
-    AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowJob, WorkflowStatus,
+    AnnotationLevel, CheckAnnotation, JobLogs, PrFilter, WorkflowConclusion, WorkflowJob,
+    WorkflowStatus,
 };
 use crate::icons;
 use crate::services::{
@@ -232,6 +233,7 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
             job_logs_toggle_step(app);
             None
         }
+        Message::OpenStepInEditor => open_step_in_editor(app),
         Message::SmartCopyStepOutput => {
             smart_copy_step_output(app);
             None
@@ -708,6 +710,29 @@ fn handle_actions_result(app: &mut App, result: FetchResult) {
                 )
             });
             app.actions_poll_enabled = has_pending;
+
+            // Find the first failed job and select it
+            let mut first_failed_index: Option<usize> = None;
+            let mut current_idx = 0;
+            for run in &data.workflow_runs {
+                for job in &run.jobs {
+                    if matches!(
+                        job.conclusion,
+                        Some(WorkflowConclusion::Failure)
+                            | Some(WorkflowConclusion::TimedOut)
+                            | Some(WorkflowConclusion::StartupFailure)
+                    ) {
+                        first_failed_index = Some(current_idx);
+                        break;
+                    }
+                    current_idx += 1;
+                }
+                if first_failed_index.is_some() {
+                    break;
+                }
+            }
+            app.selected_job_index = first_failed_index.unwrap_or(0);
+
             app.actions_data = Some(data);
             app.actions_loading = false;
         }
@@ -1040,10 +1065,17 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
                     .position(|s| s.is_failed)
                     .unwrap_or(0);
 
+                // If the selected container has sub-steps, find the first failed sub-step
+                let selected_sub_step = steps.get(selected).and_then(|step| {
+                    step.sub_steps.as_ref().and_then(|sub_steps| {
+                        sub_steps.iter().position(|s| s.is_failed)
+                    })
+                });
+
                 app.job_logs_expanded_steps = expanded;
                 app.job_logs_expanded_sub_steps = expanded_sub_steps;
                 app.job_logs_selected_step = selected;
-                app.job_logs_selected_sub_step = None; // Start at container level
+                app.job_logs_selected_sub_step = selected_sub_step;
             } else {
                 app.job_logs_expanded_steps.clear();
                 app.job_logs_expanded_sub_steps.clear();
@@ -1174,6 +1206,42 @@ fn job_logs_toggle_step(app: &mut App) {
             }
         }
     }
+}
+
+fn get_selected_step_name(app: &App) -> Option<String> {
+    let logs = app.job_logs.as_ref()?;
+    let steps = logs.steps.as_ref()?;
+    let step = steps.get(app.job_logs_selected_step)?;
+
+    match app.job_logs_selected_sub_step {
+        Some(sub_idx) => step
+            .sub_steps
+            .as_ref()?
+            .get(sub_idx)
+            .map(|s| s.name.clone()),
+        None => Some(step.name.clone()),
+    }
+}
+
+fn open_step_in_editor(app: &mut App) -> Option<Command> {
+    let output = match get_selected_step_output(app) {
+        Some(o) if !o.is_empty() && o != "(No output)" => o,
+        _ => {
+            app.clipboard_feedback = Some("No output to open".to_string());
+            app.clipboard_feedback_time = std::time::Instant::now();
+            return None;
+        }
+    };
+
+    let step_name = get_selected_step_name(app).unwrap_or_else(|| "step".to_string());
+    // Sanitize step name for filename
+    let safe_name: String = step_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+
+    let filename = format!("ghui_step_{}.log", safe_name);
+    Some(Command::OpenInEditor(output, filename))
 }
 
 fn copy_job_logs_to_clipboard(app: &mut App) {
