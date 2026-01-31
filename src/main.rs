@@ -229,9 +229,7 @@ fn open_in_editor(
     );
 
     // Open editor and wait for it to finish
-    let result = std::process::Command::new(&editor)
-        .arg(&temp_file)
-        .status();
+    let result = std::process::Command::new(&editor).arg(&temp_file).status();
 
     // Re-enter alternate screen and enable raw mode
     let _ = enable_raw_mode();

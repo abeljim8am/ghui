@@ -1,6 +1,4 @@
 use ratatui::widgets::TableState;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::process::Command as ProcessCommand;
 
 use crate::data::{
@@ -9,29 +7,14 @@ use crate::data::{
 };
 use crate::icons;
 use crate::services::{
-    delete_label_filter, extract_job_number_from_url, filter_prs, is_circleci_configured,
-    is_circleci_url, load_label_filters, save_label_filter,
+    circleci_debug_log as debug_log, delete_label_filter, extract_job_number_from_url, filter_prs,
+    is_circleci_configured, is_circleci_url, load_label_filters, save_label_filter,
 };
 use crate::utils::checkout_branch;
 use crate::view::calculate_preview_positions;
 
 use super::message::{Command, FetchResult, Message};
 use super::model::App;
-
-/// Debug logging to /tmp/ghui_circleci_debug.log
-fn debug_log(msg: &str) {
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/ghui_circleci_debug.log")
-    {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(file, "[{}] {}", timestamp, msg);
-    }
-}
 
 /// Update the application state based on a message.
 /// Returns an optional command to be executed by the main loop.
@@ -985,23 +968,47 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
             job.name, job.id, job.details_url
         ));
 
-        // Check if this is a CircleCI job and we have CircleCI configured
+        // Check if this is a CircleCI job
         if let Some(ref details_url) = job.details_url {
             debug_log(&format!("  Checking if CircleCI URL: {}", details_url));
-            debug_log(&format!("  is_circleci_url={}, is_circleci_configured={}",
-                is_circleci_url(details_url), is_circleci_configured()));
+            debug_log(&format!(
+                "  is_circleci_url={}, is_circleci_configured={}",
+                is_circleci_url(details_url),
+                is_circleci_configured()
+            ));
 
-            if is_circleci_url(details_url) && is_circleci_configured() {
+            if is_circleci_url(details_url) {
+                // CircleCI job detected - check if token is configured
+                if !is_circleci_configured() {
+                    debug_log("  -> CircleCI job but no token configured");
+                    app.job_logs_loading = false;
+                    app.job_logs = Some(JobLogs {
+                        job_id: job.id,
+                        job_name: job.name.clone(),
+                        content: format!(
+                            "{} CircleCI Token Required\n\n\
+                            To view CircleCI job logs, set the CIRCLECI_TOKEN environment variable:\n\n\
+                            1. Go to CircleCI → User Settings → Personal API Tokens\n\
+                            2. Create a new token\n\
+                            3. Export it: export CIRCLECI_TOKEN=your_token\n\n\
+                            Press 'o' to open this job in your browser instead.",
+                            icons::STATUS_ACTION_REQUIRED
+                        ),
+                        steps: None,
+                    });
+                    return None;
+                }
+
                 let job_number = extract_job_number_from_url(details_url);
                 debug_log(&format!("  Extracted job_number: {:?}", job_number));
 
                 if let Some(job_number) = job_number {
-                    debug_log(&format!("  -> Using CircleCI fetch for job_number={}", job_number));
+                    debug_log(&format!(
+                        "  -> Using CircleCI fetch for job_number={}",
+                        job_number
+                    ));
                     return Some(Command::StartCircleCIJobLogsFetch(
-                        owner,
-                        repo,
-                        job_number,
-                        job.name,
+                        owner, repo, job_number, job.name,
                     ));
                 } else {
                     debug_log("  -> No job_number extracted, falling back to GitHub CLI");
@@ -1012,7 +1019,10 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
         }
 
         // Fall back to GitHub logs via gh CLI
-        debug_log(&format!("  -> Using GitHub CLI fetch for job.id={}", job.id));
+        debug_log(&format!(
+            "  -> Using GitHub CLI fetch for job.id={}",
+            job.id
+        ));
         return Some(Command::StartJobLogsFetch(owner, repo, job.id, job.name));
     }
     None
@@ -1041,10 +1051,7 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
                 // Default expansion state:
                 // - Expand failed containers/steps only
                 // - Keep successful ones closed
-                let expanded: Vec<bool> = steps
-                    .iter()
-                    .map(|step| step.is_failed)
-                    .collect();
+                let expanded: Vec<bool> = steps.iter().map(|step| step.is_failed).collect();
 
                 // Initialize sub-step expansion state - all closed by default
                 let expanded_sub_steps: Vec<Vec<bool>> = steps
@@ -1060,16 +1067,13 @@ fn handle_job_logs_result(app: &mut App, result: FetchResult) {
                     .collect();
 
                 // Select the first failed container, or the first container if none failed
-                let selected = steps
-                    .iter()
-                    .position(|s| s.is_failed)
-                    .unwrap_or(0);
+                let selected = steps.iter().position(|s| s.is_failed).unwrap_or(0);
 
                 // If the selected container has sub-steps, find the first failed sub-step
                 let selected_sub_step = steps.get(selected).and_then(|step| {
-                    step.sub_steps.as_ref().and_then(|sub_steps| {
-                        sub_steps.iter().position(|s| s.is_failed)
-                    })
+                    step.sub_steps
+                        .as_ref()
+                        .and_then(|sub_steps| sub_steps.iter().position(|s| s.is_failed))
                 });
 
                 app.job_logs_expanded_steps = expanded;
@@ -1100,7 +1104,11 @@ fn job_logs_next_step(app: &mut App) {
         if let Some(ref steps) = logs.steps {
             let current_step = app.job_logs_selected_step;
             let current_sub = app.job_logs_selected_sub_step;
-            let is_expanded = app.job_logs_expanded_steps.get(current_step).copied().unwrap_or(false);
+            let is_expanded = app
+                .job_logs_expanded_steps
+                .get(current_step)
+                .copied()
+                .unwrap_or(false);
 
             // Check if current step has sub-steps
             let has_sub_steps = steps
@@ -1163,7 +1171,11 @@ fn job_logs_prev_step(app: &mut App) {
                 None if current_step > 0 => {
                     // At container level, move to previous container
                     let prev_step = current_step - 1;
-                    let prev_is_expanded = app.job_logs_expanded_steps.get(prev_step).copied().unwrap_or(false);
+                    let prev_is_expanded = app
+                        .job_logs_expanded_steps
+                        .get(prev_step)
+                        .copied()
+                        .unwrap_or(false);
                     let prev_sub_steps_len = steps
                         .get(prev_step)
                         .and_then(|s| s.sub_steps.as_ref())
@@ -1237,7 +1249,13 @@ fn open_step_in_editor(app: &mut App) -> Option<Command> {
     // Sanitize step name for filename
     let safe_name: String = step_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     let filename = format!("ghui_step_{}.log", safe_name);
@@ -1262,7 +1280,10 @@ fn get_selected_step_output(app: &App) -> Option<String> {
     match app.job_logs_selected_sub_step {
         Some(sub_idx) => {
             // Get sub-step output
-            step.sub_steps.as_ref()?.get(sub_idx).map(|s| s.output.clone())
+            step.sub_steps
+                .as_ref()?
+                .get(sub_idx)
+                .map(|s| s.output.clone())
         }
         None => {
             // Get container/step output
@@ -1295,9 +1316,15 @@ fn extract_test_failures(output: &str) -> Option<String> {
         let trimmed = line.trim();
 
         // Detect start of a failure/error block (e.g., "  1) Error:", "  2) Failure:")
-        if (trimmed.starts_with("1)") || trimmed.starts_with("2)") || trimmed.starts_with("3)")
-            || trimmed.starts_with("4)") || trimmed.starts_with("5)") || trimmed.starts_with("6)")
-            || trimmed.starts_with("7)") || trimmed.starts_with("8)") || trimmed.starts_with("9)"))
+        if (trimmed.starts_with("1)")
+            || trimmed.starts_with("2)")
+            || trimmed.starts_with("3)")
+            || trimmed.starts_with("4)")
+            || trimmed.starts_with("5)")
+            || trimmed.starts_with("6)")
+            || trimmed.starts_with("7)")
+            || trimmed.starts_with("8)")
+            || trimmed.starts_with("9)"))
             && (trimmed.contains("Error:") || trimmed.contains("Failure:"))
         {
             // Save previous failure if any
@@ -1310,7 +1337,12 @@ fn extract_test_failures(output: &str) -> Option<String> {
         } else if in_failure {
             // Check if we've reached the end of the failure block
             // Empty line followed by another failure, or summary line
-            if trimmed.is_empty() && current_failure.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+            if trimmed.is_empty()
+                && current_failure
+                    .last()
+                    .map(|l| l.trim().is_empty())
+                    .unwrap_or(false)
+            {
                 // Two consecutive empty lines - end of block
                 result.push(current_failure.join("\n"));
                 current_failure.clear();
@@ -1327,12 +1359,17 @@ fn extract_test_failures(output: &str) -> Option<String> {
         }
 
         // Capture summary line (e.g., "4869 runs, 18453 assertions, 1 failures, 2 errors, 0 skips")
-        if trimmed.contains(" runs, ") && trimmed.contains(" assertions, ") && trimmed.contains(" failures, ") {
+        if trimmed.contains(" runs, ")
+            && trimmed.contains(" assertions, ")
+            && trimmed.contains(" failures, ")
+        {
             summary_line = Some(trimmed.to_string());
         }
 
         // Capture exit status line
-        if trimmed.to_lowercase().contains("exit") && (trimmed.contains("status") || trimmed.contains("code")) {
+        if trimmed.to_lowercase().contains("exit")
+            && (trimmed.contains("status") || trimmed.contains("code"))
+        {
             exit_line = Some(trimmed.to_string());
         }
     }

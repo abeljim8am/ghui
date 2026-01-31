@@ -62,10 +62,10 @@ pub struct App {
     pub job_logs: Option<JobLogs>,
     pub job_logs_loading: bool,
     pub job_logs_scroll: u16,
-    pub job_logs_selected_step: usize,                // Currently selected top-level step/container
-    pub job_logs_expanded_steps: Vec<bool>,           // Which top-level steps are expanded
-    pub job_logs_selected_sub_step: Option<usize>,    // Currently selected sub-step within a container (None = container itself selected)
-    pub job_logs_expanded_sub_steps: Vec<Vec<bool>>,  // Which sub-steps are expanded per container
+    pub job_logs_selected_step: usize, // Currently selected top-level step/container
+    pub job_logs_expanded_steps: Vec<bool>, // Which top-level steps are expanded
+    pub job_logs_selected_sub_step: Option<usize>, // Currently selected sub-step within a container (None = container itself selected)
+    pub job_logs_expanded_sub_steps: Vec<Vec<bool>>, // Which sub-steps are expanded per container
 
     // Annotations view state (for reviewdog, etc.)
     pub annotations_view: bool, // true if viewing annotations, false for raw logs
@@ -227,7 +227,9 @@ impl App {
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             while let Ok((owner, repo, job_number, job_name)) = circleci_logs_rx_internal.recv() {
-                let result = rt.block_on(fetch_circleci_job_logs(&owner, &repo, job_number, &job_name));
+                let result = rt.block_on(fetch_circleci_job_logs(
+                    &owner, &repo, job_number, &job_name,
+                ));
                 let msg = match result {
                     Ok(logs) => FetchResult::JobLogsSuccess(logs),
                     Err(e) => FetchResult::JobLogsError(format!("{}", e)),

@@ -1,3 +1,30 @@
+//! CircleCI API integration for fetching job logs and workflow data.
+//!
+//! This module provides CircleCI-specific functionality for the GHUI application.
+//! It follows a pattern that can be replicated for other CI providers.
+//!
+//! # Adding a New CI Provider
+//!
+//! To add support for a new CI provider (e.g., Jenkins, GitLab CI), create a new module
+//! following this structure:
+//!
+//! 1. Create a new file `src/services/<provider>.rs`
+//! 2. Implement the following public functions:
+//!    - `is_<provider>_url(url: &str) -> bool` - Detect if a URL belongs to this provider
+//!    - `is_<provider>_configured() -> bool` - Check if required credentials are set
+//!    - `get_<provider>_token() -> Option<String>` - Get the API token from environment
+//!    - `fetch_<provider>_job_logs(owner, repo, job_id, job_name) -> Result<JobLogs>` - Fetch job logs
+//!    - Optionally: `extract_job_number_from_url(url: &str) -> Option<u64>` - Parse job IDs from URLs
+//!
+//! 3. Export the functions in `src/services.rs`
+//!
+//! 4. Add detection logic in `src/app/update.rs::open_job_logs()` to route to the new provider
+//!
+//! 5. Add a new Command variant if the provider needs its own async channel
+//!
+//! The `JobLogs` struct with optional `steps` field provides a flexible return format
+//! that works with the foldable steps UI for structured output or plain text for simple logs.
+
 use anyhow::Result;
 use futures::future::join_all;
 use serde::Deserialize;
@@ -8,11 +35,20 @@ use strip_ansi_escapes::strip_str;
 
 use crate::data::{JobLogs, JobStep, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 const CIRCLECI_API_V2_BASE: &str = "https://circleci.com/api/v2";
 const CIRCLECI_API_V1_BASE: &str = "https://circleci.com/api/v1.1";
 
+// =============================================================================
+// Debug & Utility Functions
+// =============================================================================
+
 /// Debug logging to /tmp/ghui_circleci_debug.log
-fn debug_log(msg: &str) {
+/// Useful for troubleshooting CircleCI API interactions
+pub fn debug_log(msg: &str) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -26,6 +62,10 @@ fn debug_log(msg: &str) {
     }
 }
 
+// =============================================================================
+// Configuration & Token Functions
+// =============================================================================
+
 /// Get CircleCI API token from environment
 pub fn get_circleci_token() -> Option<String> {
     env::var("CIRCLECI_TOKEN").ok()
@@ -36,7 +76,11 @@ pub fn is_circleci_configured() -> bool {
     get_circleci_token().is_some()
 }
 
-// API Response types - allow unused fields as they're part of the API schema
+// =============================================================================
+// API Response Types
+// =============================================================================
+
+// Allow unused fields as they're part of the API schema and may be used for debugging
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -193,6 +237,10 @@ struct V1Action {
     has_output: Option<bool>,
 }
 
+// =============================================================================
+// HTTP Client & API Helpers
+// =============================================================================
+
 /// Create an HTTP client with CircleCI auth headers
 fn create_client(token: &str) -> Result<reqwest::Client> {
     use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
@@ -258,7 +306,11 @@ async fn fetch_workflow_jobs(workflow_id: &str) -> Result<Vec<CircleCIJob>> {
 
 /// Fetch job details including steps (v2 API - limited info)
 #[allow(dead_code)]
-async fn fetch_job_details_v2(owner: &str, repo: &str, job_number: u64) -> Result<JobDetailsResponse> {
+async fn fetch_job_details_v2(
+    owner: &str,
+    repo: &str,
+    job_number: u64,
+) -> Result<JobDetailsResponse> {
     let token = get_circleci_token()
         .ok_or_else(|| anyhow::anyhow!("CIRCLECI_TOKEN environment variable not set"))?;
 
@@ -370,6 +422,10 @@ async fn fetch_step_output(output_url: &str, _token: &str) -> Result<String> {
     Ok(String::new())
 }
 
+// =============================================================================
+// Public API - Job Logs Fetching
+// =============================================================================
+
 /// Fetch job logs from CircleCI by extracting step outputs using v1.1 API
 /// Returns structured steps for foldable display
 pub async fn fetch_circleci_job_logs(
@@ -399,7 +455,9 @@ pub async fn fetch_circleci_job_logs(
 
         debug_log(&format!(
             "Processing job: is_parallel={}, num_containers={}, num_steps={}",
-            is_parallel, num_containers, steps.len()
+            is_parallel,
+            num_containers,
+            steps.len()
         ));
 
         // First pass: collect all URLs that need fetching with their coordinates
@@ -441,7 +499,8 @@ pub async fn fetch_circleci_job_logs(
                     let action = step.actions.get(container_idx);
 
                     let (step_status, step_failed, output) = if let Some(action) = action {
-                        let action_status = action.status.as_deref().unwrap_or("unknown").to_lowercase();
+                        let action_status =
+                            action.status.as_deref().unwrap_or("unknown").to_lowercase();
                         let action_failed = action_status == "failed"
                             || action_status == "timedout"
                             || action.exit_code.map(|c| c != 0).unwrap_or(false);
@@ -479,9 +538,17 @@ pub async fn fetch_circleci_job_logs(
                             output = "(No output)".to_string();
                         }
 
-                        (action.status.as_deref().unwrap_or("unknown").to_string(), action_failed, output)
+                        (
+                            action.status.as_deref().unwrap_or("unknown").to_string(),
+                            action_failed,
+                            output,
+                        )
                     } else {
-                        ("skipped".to_string(), false, "(No data for this container)".to_string())
+                        (
+                            "skipped".to_string(),
+                            false,
+                            "(No data for this container)".to_string(),
+                        )
                     };
 
                     container_sub_steps.push(JobStep {
@@ -494,7 +561,11 @@ pub async fn fetch_circleci_job_logs(
                 }
 
                 // Create container as top-level step with sub_steps
-                let container_status = if container_failed { "failed" } else { "success" };
+                let container_status = if container_failed {
+                    "failed"
+                } else {
+                    "success"
+                };
                 structured_steps.push(JobStep {
                     name: format!("Container {}", container_idx),
                     status: container_status.to_string(),
@@ -594,6 +665,10 @@ pub async fn fetch_circleci_job_logs(
     })
 }
 
+// =============================================================================
+// Status Conversion Helpers
+// =============================================================================
+
 /// Convert CircleCI status string to WorkflowStatus
 fn parse_circleci_status(status: &str) -> WorkflowStatus {
     match status.to_lowercase().as_str() {
@@ -621,6 +696,10 @@ fn parse_circleci_conclusion(status: &str) -> Option<WorkflowConclusion> {
         _ => None,
     }
 }
+
+// =============================================================================
+// Public API - Workflow Fetching
+// =============================================================================
 
 /// Fetch CircleCI workflows and jobs for a branch as WorkflowRun structures
 /// This can be used to augment or replace GitHub check data with direct CircleCI data
@@ -695,6 +774,10 @@ pub async fn fetch_circleci_workflows_for_branch(
     Ok(workflow_runs)
 }
 
+// =============================================================================
+// URL Detection & Parsing
+// =============================================================================
+
 /// Extract CircleCI job number (build number) from a details URL
 /// CircleCI URLs can be in various formats:
 /// - https://circleci.com/gh/owner/repo/123 (legacy - 123 is build number)
@@ -722,8 +805,14 @@ pub fn extract_job_number_from_url(url: &str) -> Option<u64> {
     if let Some(jobs_idx) = url_path.find("/jobs/") {
         let after_jobs = &url_path[jobs_idx + 6..];
         // Extract digits until we hit a non-digit or end
-        let num_str: String = after_jobs.chars().take_while(|c| c.is_ascii_digit()).collect();
-        debug_log(&format!("  Pattern 1 (/jobs/): found, after_jobs='{}', num_str='{}'", after_jobs, num_str));
+        let num_str: String = after_jobs
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        debug_log(&format!(
+            "  Pattern 1 (/jobs/): found, after_jobs='{}', num_str='{}'",
+            after_jobs, num_str
+        ));
         if !num_str.is_empty() {
             let result = num_str.parse().ok();
             debug_log(&format!("  -> Extracted job number: {:?}", result));

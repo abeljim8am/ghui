@@ -690,7 +690,10 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
             .map(|s| s.iter().filter(|st| st.is_failed).count())
             .unwrap_or(0);
         if failed_count > 0 {
-            format!(" {} ({} steps, {} failed) ", logs.job_name, step_count, failed_count)
+            format!(
+                " {} ({} steps, {} failed) ",
+                logs.job_name, step_count, failed_count
+            )
         } else {
             format!(" {} ({} steps) ", logs.job_name, step_count)
         }
@@ -750,7 +753,8 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
             let content_width = content_area.width as usize;
 
             for (idx, step) in steps.iter().enumerate() {
-                let is_container_selected = idx == app.job_logs_selected_step && app.job_logs_selected_sub_step.is_none();
+                let is_container_selected =
+                    idx == app.job_logs_selected_step && app.job_logs_selected_sub_step.is_none();
                 let is_expanded = app
                     .job_logs_expanded_steps
                     .get(idx)
@@ -769,7 +773,11 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
                     "  "
                 };
                 let fold_icon = if has_sub_steps || !step.output.is_empty() {
-                    if is_expanded { "▼" } else { "▶" }
+                    if is_expanded {
+                        "▼"
+                    } else {
+                        "▶"
+                    }
                 } else {
                     " "
                 };
@@ -849,7 +857,10 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
                                 Span::raw(sub_prefix),
                                 Span::styled(sub_fold_icon, Style::default().fg(Color::DarkGray)),
                                 Span::raw(" "),
-                                Span::styled(sub_status_icon, Style::default().fg(sub_status_color)),
+                                Span::styled(
+                                    sub_status_icon,
+                                    Style::default().fg(sub_status_color),
+                                ),
                                 Span::raw(" "),
                                 Span::styled(&sub_step.name, sub_header_style),
                                 Span::styled(
