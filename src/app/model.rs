@@ -187,8 +187,9 @@ impl App {
 
         // Spawn background thread for fetching job logs
         thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
             while let Ok((owner, repo, job_id, job_name)) = job_logs_rx_internal.recv() {
-                let result = fetch_job_logs(&owner, &repo, job_id, &job_name);
+                let result = rt.block_on(fetch_job_logs(&owner, &repo, job_id, &job_name));
                 let msg = match result {
                     Ok(logs) => FetchResult::JobLogsSuccess(logs),
                     Err(e) => FetchResult::JobLogsError(format!("{}", e)),

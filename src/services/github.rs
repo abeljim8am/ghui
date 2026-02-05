@@ -27,16 +27,27 @@ pub fn get_github_token() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn get_current_user() -> Result<String> {
-    let output = Command::new("gh")
-        .args(["api", "user", "--jq", ".login"])
-        .output()?;
+pub async fn get_current_user() -> Result<String> {
+    let token = get_github_token()?;
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "ghui")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
 
-    if !output.status.success() {
-        anyhow::bail!("Failed to get current user");
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to get current user: {}", response.status());
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let json: serde_json::Value = response.json().await?;
+    let login = json["login"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse user login"))?;
+
+    Ok(login.to_string())
 }
 
 pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
@@ -72,14 +83,14 @@ pub async fn fetch_prs_graphql(filter: PrFilter) -> Result<Vec<PullRequest>> {
     // This avoids missing older PRs when a repo has many open PRs.
     let query_string = match &filter {
         PrFilter::MyPrs => {
-            let current_user = get_current_user()?;
+            let current_user = get_current_user().await?;
             format!(
                 "repo:{}/{} is:pr is:open author:{}",
                 owner, repo, current_user
             )
         }
         PrFilter::ReviewRequested => {
-            let current_user = get_current_user()?;
+            let current_user = get_current_user().await?;
             format!(
                 "repo:{}/{} is:pr is:open review-requested:{}",
                 owner, repo, current_user
@@ -578,8 +589,8 @@ fn parse_commit_status_state(state: &str) -> (WorkflowStatus, Option<WorkflowCon
     }
 }
 
-/// Fetch job logs using `gh` CLI (avoids auth complexity)
-pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> Result<JobLogs> {
+/// Fetch job logs using GitHub API
+pub async fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> Result<JobLogs> {
     // If job_id is 0, this is likely a third-party check (CircleCI, etc.) without GitHub logs
     if job_id == 0 {
         return Ok(JobLogs {
@@ -591,34 +602,37 @@ pub fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> R
         });
     }
 
-    // Use gh CLI to fetch job logs - simpler than dealing with GitHub API auth for logs
-    let output = Command::new("gh")
-        .args([
-            "run",
-            "view",
-            "--repo",
-            &format!("{}/{}", owner, repo),
-            "--job",
-            &job_id.to_string(),
-            "--log",
-        ])
-        .output()?;
+    let token = get_github_token()?;
+    let client = reqwest::Client::new();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // If the job doesn't have logs yet or is a non-GitHub check, return a helpful message
-        if stderr.contains("not found") || stderr.contains("no logs") {
-            return Ok(JobLogs {
-                job_id,
-                job_name: job_name.to_string(),
-                content: "No logs available for this check.\n\nThe job may not have produced logs yet, or logs may have expired.".to_string(),
-                steps: None,
-            });
-        }
-        anyhow::bail!("Failed to fetch job logs: {}", stderr);
+    // GitHub API returns a 302 redirect to download logs
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/actions/jobs/{}/logs",
+        owner, repo, job_id
+    );
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "ghui")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(JobLogs {
+            job_id,
+            job_name: job_name.to_string(),
+            content: "No logs available for this check.\n\nThe job may not have produced logs yet, or logs may have expired.".to_string(),
+            steps: None,
+        });
     }
 
-    let content = String::from_utf8_lossy(&output.stdout).to_string();
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to fetch job logs: {}", response.status());
+    }
+
+    let content = response.text().await?;
 
     Ok(JobLogs {
         job_id,
