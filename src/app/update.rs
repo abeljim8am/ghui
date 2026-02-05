@@ -1335,7 +1335,11 @@ fn format_test_results(results: &[crate::data::TestResult]) -> String {
                 i + 1,
                 t.name,
                 file,
-                if error_msg.is_empty() { "(no message)" } else { &error_msg }
+                if error_msg.is_empty() {
+                    "(no message)"
+                } else {
+                    &error_msg
+                }
             )
         })
         .collect::<Vec<_>>()
@@ -1351,8 +1355,7 @@ fn copy_test_failures(app: &mut App) {
                 let formatted = format_test_results(test_results);
                 if copy_to_clipboard(&formatted) {
                     let count = test_results.len();
-                    app.clipboard_feedback =
-                        Some(format!("Copied {} test failure(s)", count));
+                    app.clipboard_feedback = Some(format!("Copied {} test failure(s)", count));
                     app.clipboard_feedback_time = std::time::Instant::now();
                     return;
                 }

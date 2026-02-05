@@ -419,7 +419,8 @@ fn key_to_message(app: &App, key: KeyCode, modifiers: KeyModifiers) -> Option<Me
         }
         KeyCode::Char('j') | KeyCode::Down => Some(Message::NextItem),
         KeyCode::Char('k') | KeyCode::Up => Some(Message::PreviousItem),
-        KeyCode::Char('o') | KeyCode::Enter => Some(Message::OpenSelected),
+        KeyCode::Char('o') => Some(Message::OpenSelected),
+        KeyCode::Enter => Some(Message::OpenPreviewView),
         KeyCode::Char('c') => Some(Message::PromptCheckout),
         KeyCode::Char('r') => Some(Message::Refresh),
         KeyCode::Char('?') => Some(Message::ToggleHelp),

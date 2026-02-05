@@ -86,9 +86,9 @@ pub enum Message {
     JobLogsNextStep,
     JobLogsPrevStep,
     JobLogsToggleStep,
-    OpenStepInEditor,    // Enter - open step output in $EDITOR
-    CopyTestFailures, // y - copy test failures from API
-    FullCopyStepOutput,  // x - copy full step output
+    OpenStepInEditor,   // Enter - open step output in $EDITOR
+    CopyTestFailures,   // y - copy test failures from API
+    FullCopyStepOutput, // x - copy full step output
 
     // Annotations view (reviewdog, etc.)
     AnnotationNext,

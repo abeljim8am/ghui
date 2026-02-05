@@ -590,7 +590,12 @@ fn parse_commit_status_state(state: &str) -> (WorkflowStatus, Option<WorkflowCon
 }
 
 /// Fetch job logs using GitHub API
-pub async fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str) -> Result<JobLogs> {
+pub async fn fetch_job_logs(
+    owner: &str,
+    repo: &str,
+    job_id: u64,
+    job_name: &str,
+) -> Result<JobLogs> {
     // If job_id is 0, this is likely a third-party check (CircleCI, etc.) without GitHub logs
     if job_id == 0 {
         return Ok(JobLogs {
