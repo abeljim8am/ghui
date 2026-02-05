@@ -241,6 +241,7 @@ struct V1Action {
 
 // Test metadata API response types
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct TestMetadataResponse {
     items: Vec<TestMetadataItem>,
