@@ -9,16 +9,63 @@ A terminal user interface (TUI) for viewing and managing GitHub pull requests.
   - Review Requested: PRs where your review is requested
   - Labels: PRs matching configured labels
 
+- **CI Integration**:
+  - View CI status (pass/fail/pending) at a glance
+  - Workflows view showing all CI checks (GitHub Actions, CircleCI, etc.)
+  - Job logs with foldable steps
+  - Test failure extraction and copy-to-clipboard
+  - Annotations view for reviewdog and similar tools
+
+- **PR Preview**: View PR description, comments, and reviews in-terminal with markdown rendering
+
 - **Fuzzy Search**: Quickly filter PRs using fuzzy matching
-- **CI Status**: View pass/fail/pending status at a glance
-- **Branch Checkout**: Checkout PR branches directly (supports both git and jj)
+
+- **Branch Checkout**: Checkout PR branches directly (supports both git and jujutsu)
+
 - **Labels Management**: Configure repo-specific or global label filters
-- **Caching**: SQLite-based caching for fast startup
+
+- **Caching**: SQLite-based caching for fast startup with auto-refresh every 30 seconds
 
 ## Requirements
 
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
-- Also need to make sure `git` is installed
+- Git (or [jujutsu](https://github.com/martinvonz/jj) for jj-based repos)
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GH_TOKEN` | No | GitHub personal access token. If not set, falls back to `gh auth token` (requires GitHub CLI to be authenticated) |
+| `CIRCLECI_TOKEN` | No | CircleCI API token for viewing CircleCI job logs. Required only if your project uses CircleCI |
+| `EDITOR` | No | Preferred text editor for viewing job logs (e.g., `vim`, `nvim`, `code`). Falls back to `VISUAL`, then `vim` |
+| `VISUAL` | No | Alternative to `EDITOR` for graphical editors |
+
+### Setting Up Environment Variables
+
+**For GitHub authentication**, you have two options:
+
+1. **Use GitHub CLI (recommended)**: Simply run `gh auth login` and ghui will automatically use your token
+2. **Use GH_TOKEN**: Set the environment variable with a personal access token
+
+```bash
+# Option 1: Use GitHub CLI (no env var needed)
+gh auth login
+
+# Option 2: Set GH_TOKEN in your shell profile
+export GH_TOKEN="ghp_your_token_here"
+```
+
+**For CircleCI integration** (optional):
+
+```bash
+# Add to your shell profile (~/.bashrc, ~/.zshrc, etc.)
+export CIRCLECI_TOKEN="your_circleci_token_here"
+```
+
+To generate a CircleCI token:
+1. Go to [CircleCI Personal API Tokens](https://app.circleci.com/settings/user/tokens)
+2. Click "Create New Token"
+3. Give it a name and copy the token
 
 ## Installation
 
@@ -52,6 +99,11 @@ cargo install --path .
 
 Download from the [Releases](https://github.com/abeljim8am/ghui/releases) page.
 
+**Supported platforms**:
+- macOS ARM64 (Apple Silicon)
+- Linux x64
+- Linux ARM64
+
 ## Usage
 
 Run `ghui` from within a Git repository:
@@ -61,7 +113,16 @@ cd your-repo
 ghui
 ```
 
+### Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `-v`, `--version` | Print version |
+| `--clear-cache` | Clear the local cache and exit |
+
 ### Keybindings
+
+#### Main View
 
 | Key | Action |
 |-----|--------|
@@ -73,14 +134,17 @@ ghui
 | `g` | Go to top |
 | `G` | Go to bottom |
 | `/` | Start fuzzy search |
-| `Enter` / `o` | Open PR in browser |
+| `Enter` | Open PR preview |
+| `o` | Open PR in browser |
 | `c` | Checkout branch |
+| `w` | Open workflows/CI view |
+| `p` | Open PR preview |
 | `r` | Refresh current view |
 | `l` | Manage labels |
 | `?` | Show help |
 | `q` | Quit |
 
-### Search Mode
+#### Search Mode
 
 | Key | Action |
 |-----|--------|
@@ -90,7 +154,55 @@ ghui
 | `↓` / `Tab` | Move to next result |
 | `↑` / `Shift+Tab` | Move to previous result |
 
-### Labels Management
+#### PR Preview View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `Ctrl+d` | Half-page down |
+| `Ctrl+u` | Half-page up |
+| `g` | Go to top |
+| `G` | Go to bottom |
+| `o` | Open PR in browser |
+| `q` / `Esc` | Close preview |
+
+#### Workflows View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Next job |
+| `k` / `↑` | Previous job |
+| `Enter` | Open job logs |
+| `r` | Refresh CI status |
+| `o` | Open in browser |
+| `q` / `Esc` | Close workflows view |
+
+#### Job Logs View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Next step / scroll down |
+| `k` / `↑` | Previous step / scroll up |
+| `Space` | Toggle step expansion |
+| `Enter` | Open step in external editor |
+| `y` | Copy test failures |
+| `x` | Copy full step output |
+| `o` | Open in browser |
+| `q` / `Esc` | Close job logs |
+
+#### Annotations View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Next annotation |
+| `k` / `↑` | Previous annotation |
+| `v` / `Space` | Toggle annotation selection |
+| `y` | Copy selected annotations |
+| `o` | Open in browser |
+| `q` / `Esc` | Close annotations |
+
+#### Labels Management
 
 Press `l` to open the labels popup:
 
@@ -102,7 +214,7 @@ Press `l` to open the labels popup:
 | `k` / `↑` | Move up |
 | `Esc` | Close popup |
 
-Labels can be scoped to the current repository or set as global (applies to all repos).
+When adding a label, press `Tab` to toggle between repo-specific and global scope.
 
 ## Configuration
 
@@ -111,11 +223,17 @@ ghui stores its cache and configuration in:
 - Linux: `~/.config/ghui/`
 - Windows: `%APPDATA%\ghui\`
 
+The cache is stored in a SQLite database (`cache.db`) and includes:
+- Cached PR data for fast startup
+- Configured label filters (repo-specific and global)
+
+Use `ghui --clear-cache` to reset the cache if needed.
+
 ## Building from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ghui.git
+git clone https://github.com/abeljim8am/ghui.git
 cd ghui
 
 # Build release binary
@@ -145,3 +263,31 @@ ghui uses a Model-View-Update (MVU/Elm) architecture:
 - **Message** (`src/app/message.rs`): All possible events/actions
 - **Update** (`src/app/update.rs`): State transitions based on messages
 - **View** (`src/view/`): UI rendering components
+
+### Services
+
+- `src/services/github.rs`: GitHub API integration (PRs, Actions, job logs)
+- `src/services/circleci.rs`: CircleCI API integration
+- `src/services/cache.rs`: SQLite caching layer
+- `src/services/search.rs`: Fuzzy search implementation
+
+### Version Control Support
+
+ghui automatically detects whether you're in a git or jujutsu repository by checking for a `.jj` directory.
+
+**Repository detection:**
+- Git repos: Reads remote URL via `git remote get-url origin`
+- Jujutsu repos: Reads remote URL via `jj git remote list`
+
+**Branch checkout behavior:**
+
+| VCS | Command | Fallback |
+|-----|---------|----------|
+| Git | `git switch <branch>` | - |
+| Jujutsu | `jj edit <branch>@origin` | `jj new <branch>@origin` |
+
+For jujutsu, `edit` is attempted first to move the working copy to the commit. If that fails (e.g., the commit is immutable), it falls back to `new` which creates a new mutable working copy change on top of the remote branch.
+
+## License
+
+MIT
