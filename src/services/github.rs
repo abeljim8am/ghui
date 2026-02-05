@@ -10,10 +10,18 @@ use crate::data::{
 use crate::utils::get_current_repo;
 
 pub fn get_github_token() -> Result<String> {
+    // First, check for GH_TOKEN environment variable
+    if let Ok(token) = std::env::var("GH_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    // Fall back to gh auth token
     let output = Command::new("gh").args(["auth", "token"]).output()?;
 
     if !output.status.success() {
-        anyhow::bail!("Failed to get GitHub token. Run 'gh auth login' first.");
+        anyhow::bail!("Failed to get GitHub token. Set GH_TOKEN or run 'gh auth login' first.");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
