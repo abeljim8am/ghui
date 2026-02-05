@@ -599,6 +599,7 @@ pub async fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str
             content: "No logs available for this check.\n\nPress 'o' to open it in your browser."
                 .to_string(),
             steps: None,
+            test_results: None,
         });
     }
 
@@ -625,6 +626,7 @@ pub async fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str
             job_name: job_name.to_string(),
             content: "No logs available for this check.\n\nThe job may not have produced logs yet, or logs may have expired.".to_string(),
             steps: None,
+            test_results: None,
         });
     }
 
@@ -643,6 +645,7 @@ pub async fn fetch_job_logs(owner: &str, repo: &str, job_id: u64, job_name: &str
             content
         },
         steps: None,
+        test_results: None,
     })
 }
 

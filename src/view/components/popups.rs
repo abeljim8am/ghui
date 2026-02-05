@@ -733,7 +733,7 @@ fn render_foldable_steps_view(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" expand  "),
             Span::styled("y", Style::default().fg(Color::Yellow)),
-            Span::raw(" smart copy  "),
+            Span::raw(" yank tests  "),
             Span::styled("x", Style::default().fg(Color::Yellow)),
             Span::raw(" copy  "),
             Span::styled("o", Style::default().fg(Color::Yellow)),

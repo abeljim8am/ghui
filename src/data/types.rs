@@ -281,6 +281,17 @@ pub struct WorkflowJob {
     pub annotations: Vec<CheckAnnotation>,
 }
 
+/// A test result from CircleCI test metadata API
+#[derive(Debug, Clone)]
+pub struct TestResult {
+    pub name: String,
+    pub classname: String,
+    pub file: Option<String>,
+    pub result: String,
+    pub message: Option<String>,
+    pub run_time: Option<String>,
+}
+
 /// Log content for a job
 #[derive(Debug, Clone)]
 pub struct JobLogs {
@@ -289,6 +300,8 @@ pub struct JobLogs {
     pub content: String,
     /// Structured steps for foldable display (CircleCI)
     pub steps: Option<Vec<JobStep>>,
+    /// Test results from CircleCI test metadata API
+    pub test_results: Option<Vec<TestResult>>,
 }
 
 /// A step within a job (for CircleCI foldable logs)

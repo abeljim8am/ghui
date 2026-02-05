@@ -33,7 +33,9 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use strip_ansi_escapes::strip_str;
 
-use crate::data::{JobLogs, JobStep, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus};
+use crate::data::{
+    JobLogs, JobStep, TestResult, WorkflowConclusion, WorkflowJob, WorkflowRun, WorkflowStatus,
+};
 
 // =============================================================================
 // Constants
@@ -237,6 +239,26 @@ struct V1Action {
     has_output: Option<bool>,
 }
 
+// Test metadata API response types
+
+#[derive(Debug, Deserialize)]
+struct TestMetadataResponse {
+    items: Vec<TestMetadataItem>,
+    next_page_token: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct TestMetadataItem {
+    name: String,
+    classname: String,
+    file: Option<String>,
+    result: String,
+    message: Option<String>,
+    run_time: Option<f64>,
+    source: Option<String>,
+}
+
 // =============================================================================
 // HTTP Client & API Helpers
 // =============================================================================
@@ -422,6 +444,61 @@ async fn fetch_step_output(output_url: &str, _token: &str) -> Result<String> {
     Ok(String::new())
 }
 
+/// Fetch test metadata for a job from CircleCI API v2
+/// Returns only failed/errored tests (result != "success")
+async fn fetch_test_metadata(owner: &str, repo: &str, job_number: u64) -> Result<Vec<TestResult>> {
+    let token = get_circleci_token()
+        .ok_or_else(|| anyhow::anyhow!("CIRCLECI_TOKEN environment variable not set"))?;
+
+    let client = create_client(&token)?;
+    let project_slug = get_project_slug(owner, repo);
+    let url = format!(
+        "{}/project/{}/{}/tests",
+        CIRCLECI_API_V2_BASE, project_slug, job_number
+    );
+
+    debug_log(&format!("fetch_test_metadata: url={}", url));
+
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        debug_log(&format!(
+            "fetch_test_metadata: non-success status {}",
+            response.status()
+        ));
+        return Ok(Vec::new());
+    }
+
+    let metadata: TestMetadataResponse = response.json().await?;
+
+    debug_log(&format!(
+        "fetch_test_metadata: got {} test items",
+        metadata.items.len()
+    ));
+
+    // Convert to our TestResult type, filtering for failures
+    let failures: Vec<TestResult> = metadata
+        .items
+        .into_iter()
+        .filter(|item| item.result != "success")
+        .map(|item| TestResult {
+            name: item.name,
+            classname: item.classname,
+            file: item.file,
+            result: item.result,
+            message: item.message,
+            run_time: item.run_time.map(|r| format!("{:.3}s", r)),
+        })
+        .collect();
+
+    debug_log(&format!(
+        "fetch_test_metadata: {} failures after filtering",
+        failures.len()
+    ));
+
+    Ok(failures)
+}
+
 // =============================================================================
 // Public API - Job Logs Fetching
 // =============================================================================
@@ -443,8 +520,14 @@ pub async fn fetch_circleci_job_logs(
     let token = get_circleci_token()
         .ok_or_else(|| anyhow::anyhow!("CIRCLECI_TOKEN environment variable not set"))?;
 
-    // Use v1.1 API which includes step output URLs
-    let details = fetch_job_details_v1(owner, repo, job_number).await?;
+    // Fetch job details and test metadata in parallel
+    let (details_result, test_results) = futures::join!(
+        fetch_job_details_v1(owner, repo, job_number),
+        fetch_test_metadata(owner, repo, job_number)
+    );
+
+    let details = details_result?;
+    let test_results = test_results.unwrap_or_default();
 
     let mut structured_steps: Vec<JobStep> = Vec::new();
 
@@ -661,6 +744,11 @@ pub async fn fetch_circleci_job_logs(
             None
         } else {
             Some(structured_steps)
+        },
+        test_results: if test_results.is_empty() {
+            None
+        } else {
+            Some(test_results)
         },
     })
 }

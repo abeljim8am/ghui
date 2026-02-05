@@ -217,8 +217,8 @@ pub fn update(app: &mut App, msg: Message) -> Option<Command> {
             None
         }
         Message::OpenStepInEditor => open_step_in_editor(app),
-        Message::SmartCopyStepOutput => {
-            smart_copy_step_output(app);
+        Message::CopyTestFailures => {
+            copy_test_failures(app);
             None
         }
         Message::FullCopyStepOutput => {
@@ -907,6 +907,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                 job_name: job.name.clone(),
                 content: String::new(), // Not used in annotations view
                 steps: None,
+                test_results: None,
             });
             app.job_logs_loading = false;
             return None;
@@ -932,6 +933,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                     icons::STATUS_SUCCESS
                 ),
                 steps: None,
+                test_results: None,
             });
             app.job_logs_loading = false;
             return None;
@@ -951,6 +953,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                 job_name: job.name.clone(),
                 content,
                 steps: None,
+                test_results: None,
             });
             app.job_logs_loading = false;
             return None;
@@ -995,6 +998,7 @@ fn open_job_logs(app: &mut App) -> Option<Command> {
                             icons::STATUS_ACTION_REQUIRED
                         ),
                         steps: None,
+                        test_results: None,
                     });
                     return None;
                 }
@@ -1304,121 +1308,61 @@ fn get_selected_step_output(app: &App) -> Option<String> {
     }
 }
 
-/// Extract test failures/errors from Rails/minitest output
-fn extract_test_failures(output: &str) -> Option<String> {
-    let mut result = Vec::new();
-    let mut in_failure = false;
-    let mut current_failure = Vec::new();
-    let mut summary_line: Option<String> = None;
-    let mut exit_line: Option<String> = None;
+/// Format test results for clipboard - concise format for easy reading
+fn format_test_results(results: &[crate::data::TestResult]) -> String {
+    results
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            // Extract just the error message (first line before stack trace)
+            let error_msg = t
+                .message
+                .as_ref()
+                .map(|m| {
+                    // Get first meaningful line (skip empty lines)
+                    m.lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
 
-    for line in output.lines() {
-        let trimmed = line.trim();
-
-        // Detect start of a failure/error block (e.g., "  1) Error:", "  2) Failure:")
-        if (trimmed.starts_with("1)")
-            || trimmed.starts_with("2)")
-            || trimmed.starts_with("3)")
-            || trimmed.starts_with("4)")
-            || trimmed.starts_with("5)")
-            || trimmed.starts_with("6)")
-            || trimmed.starts_with("7)")
-            || trimmed.starts_with("8)")
-            || trimmed.starts_with("9)"))
-            && (trimmed.contains("Error:") || trimmed.contains("Failure:"))
-        {
-            // Save previous failure if any
-            if !current_failure.is_empty() {
-                result.push(current_failure.join("\n"));
-                current_failure.clear();
-            }
-            in_failure = true;
-            current_failure.push(line.to_string());
-        } else if in_failure {
-            // Check if we've reached the end of the failure block
-            // Empty line followed by another failure, or summary line
-            if trimmed.is_empty()
-                && current_failure
-                    .last()
-                    .map(|l| l.trim().is_empty())
-                    .unwrap_or(false)
-            {
-                // Two consecutive empty lines - end of block
-                result.push(current_failure.join("\n"));
-                current_failure.clear();
-                in_failure = false;
-            } else if trimmed.contains(" runs, ") && trimmed.contains(" assertions, ") {
-                // Summary line reached - end of failures
-                result.push(current_failure.join("\n"));
-                current_failure.clear();
-                in_failure = false;
-                summary_line = Some(line.to_string());
-            } else {
-                current_failure.push(line.to_string());
-            }
-        }
-
-        // Capture summary line (e.g., "4869 runs, 18453 assertions, 1 failures, 2 errors, 0 skips")
-        if trimmed.contains(" runs, ")
-            && trimmed.contains(" assertions, ")
-            && trimmed.contains(" failures, ")
-        {
-            summary_line = Some(trimmed.to_string());
-        }
-
-        // Capture exit status line
-        if trimmed.to_lowercase().contains("exit")
-            && (trimmed.contains("status") || trimmed.contains("code"))
-        {
-            exit_line = Some(trimmed.to_string());
-        }
-    }
-
-    // Don't forget the last failure block
-    if !current_failure.is_empty() {
-        result.push(current_failure.join("\n"));
-    }
-
-    if result.is_empty() && summary_line.is_none() && exit_line.is_none() {
-        return None;
-    }
-
-    let mut output_parts = result;
-    if let Some(summary) = summary_line {
-        output_parts.push(format!("\n{}", summary));
-    }
-    if let Some(exit) = exit_line {
-        output_parts.push(exit);
-    }
-
-    Some(output_parts.join("\n\n"))
+            // Build concise output
+            let file = t.file.as_deref().unwrap_or("unknown");
+            format!(
+                "{}. {}\n   File: {}\n   Error: {}",
+                i + 1,
+                t.name,
+                file,
+                if error_msg.is_empty() { "(no message)" } else { &error_msg }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-/// Smart copy: extract test failures/errors from the selected step
-fn smart_copy_step_output(app: &mut App) {
-    let output = match get_selected_step_output(app) {
-        Some(o) if !o.is_empty() && o != "(No output)" => o,
-        _ => {
-            app.clipboard_feedback = Some("No output to copy".to_string());
-            app.clipboard_feedback_time = std::time::Instant::now();
-            return;
-        }
-    };
-
-    // Try to extract test failures
-    if let Some(failures) = extract_test_failures(&output) {
-        if copy_to_clipboard(&failures) {
-            app.clipboard_feedback = Some("Copied to clipboard!".to_string());
-            app.clipboard_feedback_time = std::time::Instant::now();
-            return;
+/// Copy test failures from CircleCI test metadata API
+fn copy_test_failures(app: &mut App) {
+    // Check if we have test results from the API
+    if let Some(ref job_logs) = app.job_logs {
+        if let Some(ref test_results) = job_logs.test_results {
+            if !test_results.is_empty() {
+                let formatted = format_test_results(test_results);
+                if copy_to_clipboard(&formatted) {
+                    let count = test_results.len();
+                    app.clipboard_feedback =
+                        Some(format!("Copied {} test failure(s)", count));
+                    app.clipboard_feedback_time = std::time::Instant::now();
+                    return;
+                }
+            }
         }
     }
 
-    // Fallback: copy the full output
-    if copy_to_clipboard(&output) {
-        app.clipboard_feedback = Some("Fallback: copied full output".to_string());
-        app.clipboard_feedback_time = std::time::Instant::now();
-    }
+    // Fallback: no test results available
+    app.clipboard_feedback = Some("No test failures available".to_string());
+    app.clipboard_feedback_time = std::time::Instant::now();
 }
 
 /// Full copy: copy the entire selected step output
